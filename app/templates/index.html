@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="AI-powered multi-agent cybersecurity intelligence platform for automated vendor risk assessment." />
+  <meta name="theme-color" content="#0a0a1a" />
+  <title>Vendor Risk Assessor | AI-Powered Cybersecurity Intelligence</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+  <!-- ─── Header ──────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="app-header__glow" aria-hidden="true"></div>
+    <h1 class="app-header__title">Vendor Risk Assessor</h1>
+    <p class="app-header__subtitle">AI-Powered Multi-Agent Cybersecurity Intelligence</p>
+  </header>
+
+  <!-- ─── Main Content ────────────────────────────────────── -->
+  <main class="container">
+
+    <!-- ── Input Section ──────────────────────────────────── -->
+    <section class="input-section glass-card" aria-label="Vendor Input">
+      <label class="input-section__label" for="vendor-input">Enter Vendor Names</label>
+
+      <div class="input-row">
+        <input
+          type="text"
+          id="vendor-input"
+          class="input-row__field"
+          placeholder="Type a vendor name and press Enter…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button class="btn-add" id="btn-add-vendor" type="button" aria-label="Add vendor">+</button>
+      </div>
+
+      <div class="vendor-tags" id="vendor-tags" aria-live="polite"></div>
+
+      <div class="preset-vendors">
+        <span class="preset-vendors__label">Quick Add</span>
+        <button class="btn-preset" data-vendor="Microsoft" type="button">Microsoft</button>
+        <button class="btn-preset" data-vendor="Oracle" type="button">Oracle</button>
+        <button class="btn-preset" data-vendor="Cisco" type="button">Cisco</button>
+        <button class="btn-preset" data-vendor="Adobe" type="button">Adobe</button>
+        <button class="btn-preset" data-vendor="Fortinet" type="button">Fortinet</button>
+      </div>
+
+      <button class="btn-assess" id="btn-assess" type="button" disabled>
+        <span class="btn-assess__icon">&#x1F6E1;</span>
+        Assess Vendors
+      </button>
+    </section>
+
+    <!-- ── Progress Section ───────────────────────────────── -->
+    <section class="progress-section glass-card" id="progress-section" aria-label="Assessment Progress">
+      <h2 class="progress-section__title">
+        Assessment in Progress
+        <span class="typing-dots" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </span>
+      </h2>
+
+      <div class="progress-timeline" id="progress-timeline">
+        <!-- Timeline steps injected via JS -->
+      </div>
+
+      <h3 style="font-size:0.82rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.75rem;">Agent Activity</h3>
+      <div class="agent-feed" id="agent-feed">
+        <!-- Agent messages injected via JS -->
+      </div>
+    </section>
+
+    <!-- ── Results Section ────────────────────────────────── -->
+    <section class="results-section" id="results-section" aria-label="Assessment Results">
+      <h2 class="results-section__title">Assessment Results</h2>
+
+      <!-- Summary Stats -->
+      <div class="results-summary" id="results-summary">
+        <div class="summary-stat glass-card">
+          <div class="summary-stat__value summary-stat__value--cyan" id="stat-vendors">0</div>
+          <div class="summary-stat__label">Vendors Assessed</div>
+        </div>
+        <div class="summary-stat glass-card">
+          <div class="summary-stat__value summary-stat__value--purple" id="stat-avg-risk">—</div>
+          <div class="summary-stat__label">Average Risk Score</div>
+        </div>
+        <div class="summary-stat glass-card">
+          <div class="summary-stat__value" id="stat-highest-risk">—</div>
+          <div class="summary-stat__label">Highest Risk</div>
+        </div>
+      </div>
+
+      <!-- Vendor Report Cards -->
+      <div class="vendor-cards-grid" id="vendor-cards-grid">
+        <!-- Cards injected via JS -->
+      </div>
+
+      <!-- Comparison Matrix -->
+      <div class="comparison-section" id="comparison-section">
+        <h3 class="comparison-section__title">Vendor Comparison Matrix</h3>
+        <div class="comparison-table-wrap">
+          <table class="comparison-table" id="comparison-table">
+            <thead>
+              <tr>
+                <th>Vendor</th>
+                <th>Overall Score</th>
+                <th>Risk Level</th>
+                <th>CVE Count</th>
+                <th>Critical CVEs</th>
+                <th>OSINT Signals</th>
+                <th>Recommendation</th>
+              </tr>
+            </thead>
+            <tbody id="comparison-table-body">
+              <!-- Rows injected via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ─── Footer ──────────────────────────────────────────── -->
+  <footer class="app-footer">
+    <p>Vendor Risk Assessor &mdash; Built with Multi-Agent AI &bull; Powered by LangGraph</p>
+  </footer>
+
+  <!-- ─── SVG Defs (gradient for risk gauges) ─────────────── -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="gauge-gradient-low" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#22c55e" />
+        <stop offset="100%" stop-color="#34d399" />
+      </linearGradient>
+      <linearGradient id="gauge-gradient-medium" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#eab308" />
+        <stop offset="100%" stop-color="#f59e0b" />
+      </linearGradient>
+      <linearGradient id="gauge-gradient-high" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#f97316" />
+        <stop offset="100%" stop-color="#ef4444" />
+      </linearGradient>
+      <linearGradient id="gauge-gradient-critical" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#ef4444" />
+        <stop offset="100%" stop-color="#dc2626" />
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <!-- ─── App Script ──────────────────────────────────────── -->
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

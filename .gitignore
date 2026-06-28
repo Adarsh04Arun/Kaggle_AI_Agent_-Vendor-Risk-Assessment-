@@ -1,0 +1,15 @@
+# Environment variables (secrets)
+.env
+
+# Python caching
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local diagnostic files
+diagnose.py
+
+# Virtual environments
+venv/
+.venv/
