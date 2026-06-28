@@ -1,17 +1,16 @@
 @echo off
 setlocal enabledelayedexpansion
-chcp 65001 >nul 2>&1
 set PYTHONIOENCODING=utf-8
-title Vendor Risk Assessor — Launcher
+title Vendor Risk Assessor  Launcher
 color 0B
 
 echo.
-echo   ╔══════════════════════════════════════════════════════╗
-echo   ║     🛡️  Automated Vendor Risk Assessor — Launcher    ║
-echo   ╚══════════════════════════════════════════════════════╝
+echo   +------------------------------------------------------+
+echo   ^|      Automated Vendor Risk Assessor - Launcher       ^|
+echo   +------------------------------------------------------+
 echo.
 
-:: ── Load .env to read AGENT_MODEL ──────────────────────────────────
+:: -- Load .env to read AGENT_MODEL ----------------------------------
 set "AGENT_MODEL="
 if exist ".env" (
     for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
@@ -26,18 +25,18 @@ if "%AGENT_MODEL%"=="" set "AGENT_MODEL=gemini-2.0-flash-lite"
 echo   [*] Configured model: %AGENT_MODEL%
 echo.
 
-:: ── Check Python venv ──────────────────────────────────────────────
+:: -- Check Python venv ----------------------------------------------
 if exist "venv\Scripts\activate.bat" (
-    echo   [✓] Virtual environment found
+    echo   [OK] Virtual environment found
     call venv\Scripts\activate.bat
 ) else (
     echo   [!] No venv found. Using system Python.
 )
 
-:: ── Check if using Ollama ──────────────────────────────────────────
+:: -- Check if using Ollama ------------------------------------------
 echo %AGENT_MODEL% | findstr /i "ollama/" >nul 2>&1
 if %errorlevel%==0 (
-    echo   [*] Ollama model detected — checking Ollama server...
+    echo   [*] Ollama model detected - checking Ollama server...
 
     :: Locate ollama.exe (not always in PATH on Windows)
     set "OLLAMA_EXE="
@@ -55,7 +54,7 @@ if %errorlevel%==0 (
     curl -s http://localhost:11434/api/tags >nul 2>&1
     if !errorlevel! neq 0 (
         echo.
-        echo   [✗] Ollama is NOT running!
+        echo   [FAIL] Ollama is NOT running!
         echo       Please start Ollama first:
         echo         - Open the Ollama app, or
         echo         - Run: ollama serve
@@ -63,7 +62,7 @@ if %errorlevel%==0 (
         pause
         exit /b 1
     )
-    echo   [✓] Ollama server is running
+    echo   [OK] Ollama server is running
 
     :: Extract model name (strip "ollama/" prefix)
     set "OLLAMA_MODEL=%AGENT_MODEL:ollama/=%"
@@ -77,28 +76,28 @@ if %errorlevel%==0 (
             "!OLLAMA_EXE!" pull !OLLAMA_MODEL!
             if !errorlevel! neq 0 (
                 echo.
-                echo   [✗] Failed to pull model. Check the model name and try again.
+                echo   [FAIL] Failed to pull model. Check the model name and try again.
                 pause
                 exit /b 1
             )
         )
-        echo   [✓] Model "!OLLAMA_MODEL!" is available
+        echo   [OK] Model "!OLLAMA_MODEL!" is available
     )
 ) else (
     echo   [*] Using cloud model: %AGENT_MODEL%
 )
 
 echo.
-echo   ─────────────────────────────────────────────────────────
+echo   ---------------------------------------------------------
 echo.
 
-:: ── Menu ───────────────────────────────────────────────────────────
+:: -- Menu -----------------------------------------------------------
 echo   How would you like to run?
 echo.
-echo     [1] 🌐  Web Dashboard  (http://localhost:8000)
-echo     [2] ⌨️   CLI Assessment (enter vendor names)
-echo     [3] 🧪  Quick Test     (assess "Microsoft" as a demo)
-echo     [4] ❌  Exit
+echo     [1] WEB  Dashboard  (http://localhost:8000)
+echo     [2] CLI  Assessment (enter vendor names)
+echo     [3] TEST Quick Test (assess "Microsoft" as a demo)
+echo     [4] EXIT Exit
 echo.
 set /p choice="   Select [1-4]: "
 
@@ -111,7 +110,7 @@ echo   Invalid choice. Please try again.
 pause
 goto :exit
 
-:: ── Web Dashboard ──────────────────────────────────────────────────
+:: -- Web Dashboard --------------------------------------------------
 :web
 echo.
 echo   [*] Starting Web Dashboard...
@@ -121,7 +120,7 @@ echo.
 python run.py
 goto :exit
 
-:: ── CLI Assessment ─────────────────────────────────────────────────
+:: -- CLI Assessment -------------------------------------------------
 :cli
 echo.
 set /p vendors="   Enter vendor names (comma-separated): "
@@ -147,7 +146,7 @@ echo.
 pause
 goto :exit
 
-:: ── Quick Test ─────────────────────────────────────────────────────
+:: -- Quick Test -----------------------------------------------------
 :test
 echo.
 echo   [*] Running quick test assessment for "Microsoft"...
@@ -157,7 +156,7 @@ echo.
 pause
 goto :exit
 
-:: ── Exit ───────────────────────────────────────────────────────────
+:: -- Exit -----------------------------------------------------------
 :exit
 echo.
 echo   Goodbye!

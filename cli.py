@@ -93,6 +93,20 @@ def _print_report(vendor: str, report: dict[str, Any], *, use_color: bool) -> No
         for line in _wrap(str(summary), 68):
             print(f"    {line}")
 
+    # CVE Analysis
+    cve_analysis = report.get("cve_analysis")
+    if cve_analysis:
+        print(f"\n  {_BOLD}CVE & Vulnerability Analysis{_RESET}")
+        for line in _wrap(str(cve_analysis), 68):
+            print(f"    {line}")
+
+    # OSINT Analysis
+    osint_analysis = report.get("osint_analysis")
+    if osint_analysis:
+        print(f"\n  {_BOLD}OSINT & Threat Intelligence{_RESET}")
+        for line in _wrap(str(osint_analysis), 68):
+            print(f"    {line}")
+
     # Key findings / vulnerabilities
     findings = report.get("findings", report.get("vulnerabilities", []))
     if findings:
@@ -103,14 +117,19 @@ def _print_report(vendor: str, report: dict[str, Any], *, use_color: bool) -> No
                 severity = str(finding.get("severity", "info")).lower()
                 print(f"    {i}. {_c(label, severity, use_color=use_color)}")
             else:
-                print(f"    {i}. {finding}")
+                for line in _wrap(f"{i}. {finding}", 68):
+                    print(f"    {line}")
 
     # Recommendations
     recs = report.get("recommendations", [])
     if recs:
         print(f"\n  {_BOLD}Recommendations{_RESET}")
-        for i, rec in enumerate(recs[:5], 1):
-            print(f"    {i}. {rec}")
+        for i, rec in enumerate(recs, 1):
+            for line in _wrap(f"{i}. {rec}", 68):
+                if line.startswith(f"{i}."):
+                    print(f"    {line}")
+                else:
+                    print(f"       {line}")
 
     print()
 
