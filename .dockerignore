@@ -1,0 +1,26 @@
+# Secrets — never bake these into the image
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+venv/
+.venv/
+
+# Python caching
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Git
+.git/
+.gitignore
+
+# Local diagnostic / scratch files
+diagnose.py
+
+# Docs not needed at runtime
+README.md
+writeup.md
+*.md
