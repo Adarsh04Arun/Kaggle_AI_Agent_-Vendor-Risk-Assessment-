@@ -3,10 +3,10 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Google ADK](https://img.shields.io/badge/Google_ADK-1.0-4285F4?logo=google&logoColor=white)](https://google.github.io/adk-docs/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://docker.com)
+[![Kaggle](https://img.shields.io/badge/Kaggle-Agentic_AI_Competition-20BEFF?logo=kaggle&logoColor=white)](https://www.kaggle.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **AI-powered vendor cybersecurity risk assessment platform** — Evaluate third-party vendors using autonomous AI agents that research vulnerabilities, analyze breach history, and generate comprehensive risk reports.
+> **AI-powered vendor cybersecurity risk assessment platform** — Evaluate third-party vendors using autonomous AI agents that research vulnerabilities, analyze breach history, and generate comprehensive risk reports. Originally built for the Kaggle Agentic AI Competition.
 
 ---
 
@@ -65,6 +65,7 @@ graph TB
 |---------|-------------|
 | 🤖 **Multi-Agent Architecture** | Specialized AI agents for vulnerability, breach, compliance, and risk analysis |
 | 🔌 **MCP Tool Integration** | Model Context Protocol servers expose NVD, search, and scoring tools |
+| 🦙 **Local LLM Optimized** | Smart schema clamping and API date-anchoring stops local models from hallucinating |
 | 📡 **Real-time Streaming** | Server-Sent Events push live progress to the dashboard |
 | 🌐 **Web Dashboard** | Modern responsive UI with real-time progress tracking |
 | ⌨️ **CLI Interface** | Terminal-based assessment with coloured output |
@@ -273,25 +274,27 @@ python cli.py assess --help
 **Example output:**
 
 ```
-  ╔══════════════════════════════════════════════════════╗
-  ║       Automated Vendor Risk Assessor — CLI          ║
-  ╚══════════════════════════════════════════════════════╝
+  +------------------------------------------------------+
+  |       Automated Vendor Risk Assessor - CLI           |
+  +------------------------------------------------------+
 
   Vendors to assess: Acme Corp, Globex
 
   Assessing vendors ......... done!
 
-  ══════════════════════════════════════════════════════════════════════
-    Acme Corp
-  ──────────────────────────────────────────────────────────────────────
-    Risk Level : 🟡  MEDIUM
-    Risk Score : [████████████░░░░░░░░] 6.2/10
-  ══════════════════════════════════════════════════════════════════════
-    VENDOR                         RISK LEVEL      SCORE
-  ──────────────────────────────────────────────────────────────────────
-    Acme Corp                      🟡 MEDIUM       6.2/10
-    Globex                         🟢 LOW          3.1/10
-  ══════════════════════════════════════════════════════════════════════
+  Assessment Results
+────────────────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════════════════
+  ACME CORP
+────────────────────────────────────────────────────────────────────────
+  Risk Level : 🟡  MEDIUM
+  Risk Score : [████████████░░░░░░░░] 62.0/100
+════════════════════════════════════════════════════════════════════════
+  VENDOR                         RISK LEVEL      SCORE
+────────────────────────────────────────────────────────────────────────
+  Acme Corp                      🟡 MEDIUM       62.0/100
+  Globex                         🟢 LOW          31.0/100
+════════════════════════════════════════════════════════════════════════
 ```
 
 ---

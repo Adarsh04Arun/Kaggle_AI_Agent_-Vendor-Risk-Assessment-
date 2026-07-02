@@ -19,6 +19,9 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="google.adk")
+
 load_dotenv()
 
 # ---------------------------------------------------------------------------
@@ -75,63 +78,66 @@ def _print_divider(char: str = "─", width: int = 72) -> None:
 def _print_report(vendor: str, report: dict[str, Any], *, use_color: bool) -> None:
     """Pretty-print a single vendor assessment report."""
     _print_divider("═")
-    print(f"  {_c(vendor, 'header', use_color=use_color)}")
+    print(f"  {_BOLD}{_c(vendor.upper(), 'header', use_color=use_color)}{_RESET}")
     _print_divider("─")
 
     risk_level: str = str(report.get("risk_level", report.get("overall_risk", "unknown"))).lower()
     risk_score: float = float(report.get("risk_score", report.get("overall_score", 0)))
     emoji = _RISK_EMOJI.get(risk_level, "⚪")
 
-    print(f"  Risk Level : {emoji}  {_c(risk_level.upper(), risk_level, use_color=use_color)}")
-    print(f"  Risk Score : {_risk_bar(risk_score)}")
+    print(f"  {_BOLD}Risk Level{_RESET} : {emoji}  {_c(risk_level.upper(), risk_level, use_color=use_color)}")
+    print(f"  {_BOLD}Risk Score{_RESET} : {_risk_bar(risk_score)}")
+    print()
 
     # Summary
     summary = report.get("summary", report.get("executive_summary", ""))
     if summary:
-        print(f"\n  {_BOLD}Summary{_RESET}")
-        # Wrap long summaries to ~68 chars.
+        print(f"  {_BOLD}{_c('SUMMARY', 'header', use_color=use_color)}{_RESET}")
         for line in _wrap(str(summary), 68):
             print(f"    {line}")
+        print()
 
     # CVE Analysis
     cve_analysis = report.get("cve_analysis")
     if cve_analysis:
-        print(f"\n  {_BOLD}CVE & Vulnerability Analysis{_RESET}")
+        print(f"  {_BOLD}{_c('CVE & VULNERABILITY ANALYSIS', 'header', use_color=use_color)}{_RESET}")
         for line in _wrap(str(cve_analysis), 68):
             print(f"    {line}")
+        print()
 
     # OSINT Analysis
     osint_analysis = report.get("osint_analysis")
     if osint_analysis:
-        print(f"\n  {_BOLD}OSINT & Threat Intelligence{_RESET}")
+        print(f"  {_BOLD}{_c('OSINT & THREAT INTELLIGENCE', 'header', use_color=use_color)}{_RESET}")
         for line in _wrap(str(osint_analysis), 68):
             print(f"    {line}")
+        print()
 
     # Key findings / vulnerabilities
     findings = report.get("findings", report.get("vulnerabilities", []))
     if findings:
-        print(f"\n  {_BOLD}Key Findings{_RESET}")
+        print(f"  {_BOLD}{_c('KEY FINDINGS', 'header', use_color=use_color)}{_RESET}")
         for i, finding in enumerate(findings[:10], 1):
             if isinstance(finding, dict):
                 label = finding.get("title", finding.get("id", f"Finding {i}"))
                 severity = str(finding.get("severity", "info")).lower()
-                print(f"    {i}. {_c(label, severity, use_color=use_color)}")
+                print(f"    • {_c(label, severity, use_color=use_color)}")
             else:
-                for line in _wrap(f"{i}. {finding}", 68):
+                for line in _wrap(f"• {finding}", 68):
                     print(f"    {line}")
+        print()
 
     # Recommendations
     recs = report.get("recommendations", [])
     if recs:
-        print(f"\n  {_BOLD}Recommendations{_RESET}")
+        print(f"  {_BOLD}{_c('RECOMMENDATIONS', 'header', use_color=use_color)}{_RESET}")
         for i, rec in enumerate(recs, 1):
             for line in _wrap(f"{i}. {rec}", 68):
                 if line.startswith(f"{i}."):
                     print(f"    {line}")
                 else:
                     print(f"       {line}")
-
-    print()
+        print()
 
 
 def _wrap(text: str, width: int) -> list[str]:
@@ -183,13 +189,13 @@ async def _run_assessment(vendors: list[str], *, use_color: bool) -> None:
 
     print()
     print(
-        _c("  ╔══════════════════════════════════════════════════════╗", "header", use_color=use_color)
+        _c("  +------------------------------------------------------+", "header", use_color=use_color)
     )
     print(
-        _c("  ║       Automated Vendor Risk Assessor — CLI          ║", "header", use_color=use_color)
+        _c("  |       Automated Vendor Risk Assessor - CLI           |", "header", use_color=use_color)
     )
     print(
-        _c("  ╚══════════════════════════════════════════════════════╝", "header", use_color=use_color)
+        _c("  +------------------------------------------------------+", "header", use_color=use_color)
     )
     print()
     print(f"  Vendors to assess: {', '.join(vendors)}")

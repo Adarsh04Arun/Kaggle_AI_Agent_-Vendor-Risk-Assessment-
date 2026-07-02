@@ -29,20 +29,13 @@ product security assessment.
 Conduct a thorough CVE analysis for the vendor named in `{vendor_name}` \
 (read from session state key `vendor_name`).
 
-## Research Steps — execute ALL of them in order
-1. **Product Discovery**: Use `get_vendor_products` to identify the vendor's \
-   known products and their CPE (Common Platform Enumeration) identifiers.
-2. **CVE Search**: Use `search_cves` to find all known CVEs associated with \
-   the vendor and/or its products. Search by vendor name, product names, and \
-   CPE strings.
-3. **Severity Analysis**: For the most critical CVEs, use `get_cve_details` \
-   to retrieve full details including CVSS scores, attack vectors, and \
-   affected versions.
-4. **Summary Statistics**: Use `get_vendor_cve_summary` to obtain aggregated \
-   CVE statistics if available, and cross-reference with your own findings.
+## Research Steps
+1. **Summary Statistics**: Use the `get_vendor_cve_summary` tool to obtain \
+   aggregated CVE statistics for the vendor (total CVEs, severity breakdown, \
+   and average CVSS score). This is the fastest and most reliable method.
 
 ## Output Requirements
-After completing ALL research steps, your final response MUST be a **single \
+After completing your research, your final response MUST be a **single \
 JSON object** (no extra text, no markdown fences) with exactly this structure:
 
 ```json
@@ -52,48 +45,15 @@ JSON object** (no extra text, no markdown fences) with exactly this structure:
   "high_count": <integer>,
   "medium_count": <integer>,
   "low_count": <integer>,
-  "avg_cvss_score": <float, rounded to 1 decimal>,
-  "top_cves": [
-    {
-      "cve_id": "CVE-YYYY-NNNNN",
-      "cvss_score": <float>,
-      "severity": "CRITICAL / HIGH / MEDIUM / LOW",
-      "description": "Short description of the vulnerability",
-      "affected_product": "Product name and version(s)",
-      "published_date": "YYYY-MM-DD",
-      "attack_vector": "NETWORK / ADJACENT / LOCAL / PHYSICAL"
-    }
-  ],
-  "most_recent_cve": {
-    "cve_id": "CVE-YYYY-NNNNN",
-    "published_date": "YYYY-MM-DD",
-    "severity": "CRITICAL / HIGH / MEDIUM / LOW",
-    "description": "..."
-  },
-  "affected_products": [
-    {
-      "product_name": "...",
-      "cpe": "cpe:2.3:...",
-      "cve_count": <integer>,
-      "highest_cvss": <float>
-    }
-  ]
+  "avg_cvss_score": <float, rounded to 1 decimal>
 }
 ```
 
 ## Important Rules
-- Severity thresholds follow CVSS v3.x: CRITICAL ≥ 9.0, HIGH ≥ 7.0, \
-  MEDIUM ≥ 4.0, LOW < 4.0.
-- `top_cves` should contain the 10 most severe CVEs, sorted by CVSS \
-  descending. If fewer than 10 exist, include all.
-- `most_recent_cve` is the CVE with the latest `published_date`. Set to \
-  `null` if no CVEs were found.
-- `avg_cvss_score` is the arithmetic mean of all CVSS scores found. Set to \
-  `0.0` if no CVEs exist.
-- If no CVEs are found for the vendor, set all counts to `0`, lists to `[]`, \
-  and `most_recent_cve` to `null`.
-- Do NOT fabricate CVE IDs or scores. Only report real, verified CVE data.
-- Be thorough — search by vendor name AND individual product names.
+- Do NOT fabricate CVE counts or scores. Only report the exact statistics \
+  returned by the `get_vendor_cve_summary` tool.
+- If no CVEs are found for the vendor, set all counts and scores to `0` or `0.0`.
+- Do not include any other keys in the JSON output.
 """
 
 

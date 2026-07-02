@@ -489,7 +489,7 @@ class VendorRiskOrchestrator:
                             if len(self._mcp_server_command) > 1
                             else [],
                         ),
-                        timeout=30.0,
+                        timeout=120.0,
                     )
                 )
             logger.info("MCP toolset created successfully")

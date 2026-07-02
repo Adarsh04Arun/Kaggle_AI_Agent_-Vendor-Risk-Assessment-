@@ -116,8 +116,9 @@ significant findings.
 
 ### Step 4 — Write Detailed Analysis
 Write two detailed analysis sections:
-- **CVE Analysis**: Summarise vulnerability findings, highlight the most \
-  critical CVEs, affected products, and severity distribution.
+- **CVE Analysis**: Summarise vulnerability findings, highlighting the \
+  total count, average severity score, and the distribution of critical vs \
+  high vulnerabilities.
 - **OSINT Analysis**: Summarise breach history, compliance issues, security \
   incidents, and news sentiment.
 

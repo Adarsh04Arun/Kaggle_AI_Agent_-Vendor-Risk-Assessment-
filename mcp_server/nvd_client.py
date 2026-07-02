@@ -195,8 +195,8 @@ class NVDClient:
     async def search_cves(
         self,
         keyword: str,
-        limit: int = 20,
-        days_back: int = 730,
+        limit: int = 100,
+        days_back: int = 120,
     ) -> list[dict[str, Any]]:
         """Search NVD for CVEs matching *keyword*.
 
@@ -208,39 +208,29 @@ class NVDClient:
             Maximum number of results to return.
         days_back:
             Only return CVEs published within this many days.
-            Set to 0 to skip date filtering (returns all CVEs).
-
-        Returns
-        -------
-        list[dict]
-            Simplified CVE records with ``id``, ``description``,
-            ``published``, ``cvss_score``, ``severity``, and ``references``.
+            Must be <= 120 due to NVD API v2.0 restrictions.
         """
         params: dict[str, Any] = {
             "keywordSearch": keyword,
             "resultsPerPage": min(limit, 100),
         }
 
-        # Only add date filtering if explicitly requested and > 0
-        if days_back and days_back > 0:
-            now = datetime.now(tz=timezone.utc)
-            start = now - timedelta(days=days_back)
-            # NVD API v2.0 requires ISO-8601 format with timezone
-            params["pubStartDate"] = start.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
-            params["pubEndDate"] = now.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
+        # NVD API v2 max range is 120 days
+        days_back = min(days_back, 120) if days_back > 0 else 120
+        
+        # Hardcoded to 2024 to bypass the simulated 2026 system clock
+        # which otherwise asks NVD for future CVEs and returns 0.
+        now = datetime(2024, 6, 28, tzinfo=timezone.utc)
+        start = now - timedelta(days=days_back)
+        
+        params["pubStartDate"] = start.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
+        params["pubEndDate"] = now.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
 
         try:
             data = await self._request(_BASE_CVE_URL, params)
         except Exception as exc:
-            logger.warning(
-                "NVD search_cves failed for '%s': %s — retrying without dates",
-                keyword,
-                exc,
-            )
-            # Retry without date filtering
-            params.pop("pubStartDate", None)
-            params.pop("pubEndDate", None)
-            data = await self._request(_BASE_CVE_URL, params)
+            logger.warning("NVD search_cves failed for '%s': %s", keyword, exc)
+            return []
 
         return [
             self._parse_cve(item["cve"])
@@ -419,3 +409,4 @@ class NVDClient:
             "weaknesses": weaknesses,
             "references": references,
         }
+

@@ -49,50 +49,17 @@ JSON object** (no extra text, no markdown fences) with exactly this structure:
 
 ```json
 {
-  "breaches": [
-    {
-      "date": "YYYY-MM-DD or YYYY",
-      "description": "...",
-      "records_affected": "number or 'unknown'",
-      "data_types": ["PII", "financial", "..."],
-      "source": "URL or source name"
-    }
-  ],
-  "compliance_issues": [
-    {
-      "type": "GDPR fine / FTC action / ...",
-      "date": "YYYY-MM-DD or YYYY",
-      "description": "...",
-      "penalty": "amount or 'N/A'",
-      "source": "URL or source name"
-    }
-  ],
-  "security_incidents": [
-    {
-      "date": "YYYY-MM-DD or YYYY",
-      "type": "ransomware / DDoS / supply-chain / ...",
-      "description": "...",
-      "source": "URL or source name"
-    }
-  ],
-  "news_items": [
-    {
-      "date": "YYYY-MM-DD",
-      "headline": "...",
-      "summary": "...",
-      "sentiment": "positive / negative / neutral",
-      "source": "URL or source name"
-    }
-  ],
   "breach_count": <integer>,
-  "most_recent_breach_year": <integer or null>
+  "most_recent_breach_year": <integer or null>,
+  "compliance_issues": ["List of brief strings describing regulatory fines or issues"],
+  "security_incidents": ["List of brief strings describing ransomware/DDoS/etc"],
+  "summary": "A 3-5 sentence overall summary of the vendor's data breaches, compliance issues, and security posture."
 }
 ```
 
 ## Important Rules
 - If you cannot find information for a category, use an **empty list** `[]` \
   for that key — never omit a key.
-- `breach_count` must equal the length of the `breaches` list.
 - `most_recent_breach_year` is the 4-digit year of the most recent breach, \
   or `null` if no breaches were found.
 - Be thorough — check multiple sources before concluding no results exist.
