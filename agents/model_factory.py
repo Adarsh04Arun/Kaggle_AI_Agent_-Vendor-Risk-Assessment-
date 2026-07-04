@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Providers that must be routed through LiteLLM instead of ADK's native
 # (Gemini) model registry.
-_LITELLM_PREFIXES = ("ollama_chat/", "ollama/", "openai/")
+_LITELLM_PREFIXES = ("ollama_chat/", "ollama/", "openai/", "huggingface/")
 
 # Local-first default: keeps Ollama as the primary handler when nothing else
 # is configured.
@@ -91,6 +91,11 @@ def build_model(model_name: str | None = None, response_schema=None):
             kwargs["api_base"] = os.getenv(
                 "OLLAMA_BASE_URL", "http://localhost:11434"
             )
+        elif name.startswith("huggingface/"):
+            # HF's TGI backend rejects temperature=0 ("must be strictly
+            # positive"); use a low positive value for near-deterministic
+            # output. LiteLLM reads HUGGINGFACE_API_KEY / HF_TOKEN from env.
+            kwargs["temperature"] = 0.1
         response_format = _json_schema_response_format(response_schema)
         if response_format is not None:
             kwargs["response_format"] = response_format

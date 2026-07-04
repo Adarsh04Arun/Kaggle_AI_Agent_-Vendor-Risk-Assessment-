@@ -99,6 +99,16 @@ async def check_web() -> Check:
     web_model = os.getenv("WEB_AGENT_MODEL", "gemini-2.0-flash-lite")
     if web_model.startswith(("ollama_chat/", "ollama/")):
         return await _check_ollama_model(web_model, "Ollama (web)")
+    if web_model.startswith("huggingface/"):
+        key = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HF_TOKEN")
+        repo = web_model.split("/", 1)[1]
+        if key:
+            return Check("Hugging Face (web)", True, f"token set · model {repo}")
+        return Check(
+            "Hugging Face (web)",
+            False,
+            "HUGGINGFACE_API_KEY / HF_TOKEN missing — the web interface needs it",
+        )
     return check_gemini()
 
 
