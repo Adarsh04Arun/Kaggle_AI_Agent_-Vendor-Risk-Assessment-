@@ -7,7 +7,9 @@ assessment) and the web ``/api/status`` endpoint to make the model's health
 
 The split matters:
     * CLI  → local **Ollama** (checked via ``AGENT_MODEL`` + ``OLLAMA_BASE_URL``)
-    * Web  → **Gemini** (checked via ``GOOGLE_API_KEY`` + ``WEB_AGENT_MODEL``)
+    * Web  → a hosted model from ``WEB_AGENT_MODEL`` — **Hugging Face** (default,
+      needs ``HUGGINGFACE_API_KEY``), **Gemini** (``GOOGLE_API_KEY``), or a local
+      **Ollama** model. ``check_web`` dispatches to the right one.
 """
 
 from __future__ import annotations
@@ -74,7 +76,7 @@ async def check_ollama(timeout: float = 4.0) -> Check:
 
 def check_gemini() -> Check:
     """Verify the web interface's Gemini credentials are present."""
-    web_model = os.getenv("WEB_AGENT_MODEL", "gemini-2.0-flash-lite")
+    web_model = os.getenv("WEB_AGENT_MODEL", "huggingface/Qwen/Qwen2.5-7B-Instruct")
     if not web_model.startswith("gemini"):
         return Check("Gemini (web)", True, f"not used — WEB_AGENT_MODEL={web_model}")
 
@@ -96,7 +98,7 @@ async def check_web() -> Check:
     pulled. This keeps the dashboard status chip accurate no matter which
     back-end the web UI points at.
     """
-    web_model = os.getenv("WEB_AGENT_MODEL", "gemini-2.0-flash-lite")
+    web_model = os.getenv("WEB_AGENT_MODEL", "huggingface/Qwen/Qwen2.5-7B-Instruct")
     if web_model.startswith(("ollama_chat/", "ollama/")):
         return await _check_ollama_model(web_model, "Ollama (web)")
     if web_model.startswith("huggingface/"):

@@ -191,9 +191,10 @@ async def run_assessment_job(job_id: str, vendors: list[str]) -> None:
         mcp_transport = os.getenv("MCP_TRANSPORT", "stdio")
         mcp_port = int(os.getenv("MCP_SERVER_PORT", "8081"))
 
-        # The web interface uses Gemini (via GOOGLE_API_KEY) by default, while
-        # the CLI stays on local Ollama. Override with WEB_AGENT_MODEL.
-        web_model = os.getenv("WEB_AGENT_MODEL", "gemini-2.0-flash-lite")
+        # The web interface uses a hosted model (Hugging Face by default; set
+        # WEB_AGENT_MODEL to a gemini-* or ollama_chat/* model to switch). The
+        # CLI stays on local Ollama via AGENT_MODEL.
+        web_model = os.getenv("WEB_AGENT_MODEL", "huggingface/Qwen/Qwen2.5-7B-Instruct")
 
         if mcp_transport == "sse":
             orchestrator = VendorRiskOrchestrator(

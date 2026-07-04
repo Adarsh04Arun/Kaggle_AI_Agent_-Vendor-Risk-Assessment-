@@ -12,7 +12,9 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
-# This image serves the Gemini-powered web dashboard (WEB_AGENT_MODEL).
+# This image serves the web dashboard. The LLM back-end is chosen at runtime
+# via WEB_AGENT_MODEL (Hugging Face / Gemini / Ollama) — set it plus the matching
+# key as environment variables on your host (Render, Cloud Run, etc.).
 # The CLI's local-Ollama path is a host-side workflow and is not containerised.
 LABEL maintainer="vendor-risk-assessor" \
       description="Automated Vendor Risk Assessor — AI-powered cybersecurity assessment"
