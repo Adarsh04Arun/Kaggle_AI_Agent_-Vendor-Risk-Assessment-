@@ -1,188 +1,135 @@
 """
 Synthesis Agent for Vendor Risk Assessment.
 
-Creates a Google ADK LlmAgent that merges OSINT and CVE findings, invokes the
-deterministic :class:`~agents.scoring.RiskScorer` via a custom tool, and
-produces a comprehensive risk report with executive summary, detailed analysis,
-and actionable recommendations.
+Creates a Google ADK ``LlmAgent`` that writes the **narrative** sections of the
+risk report — executive summary plus CVE and OSINT analysis prose — under a
+strict output schema.
 
-The agent stores the final report in session state key ``final_report``.
+Design (§5.7 — structured output):
+    The numeric risk score is *never* produced by the LLM. It is computed
+    deterministically in :mod:`agents.scoring` and merged by the orchestrator.
+    This agent is therefore constrained to a tiny three-field JSON schema via
+    ADK's ``output_schema``, which drives Ollama's structured-output ``format``
+    and Gemini's controlled generation. A small, schema-constrained output is
+    what a local model can emit reliably — eliminating the truncated /
+    unparseable JSON that previously forced a narrative-less fallback.
+
+The agent writes the structured narrative to session state key
+``synthesis_narrative``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-from datetime import datetime, timezone
-from typing import Any
 
 from google.adk.agents import LlmAgent
+from pydantic import BaseModel, Field
 
-from agents.scoring import RiskScorer, generate_recommendations
+from agents.model_factory import build_model
 
 logger = logging.getLogger(__name__)
 
-# ── Instantiate scorer once at module level (stateless, thread-safe) ────────
-_scorer = RiskScorer()
+
+# ── Structured output schema ────────────────────────────────────────────────
 
 
-# ── Custom Tool Function ───────────────────────────────────────────────────
+class SynthesisNarrative(BaseModel):
+    """The narrative sections of a vendor risk report.
 
-def calculate_risk_score_tool(
-    cve_data_json: str,
-    osint_data_json: str,
-) -> str:
-    """Calculate a deterministic vendor risk score.
-
-    This function is exposed as a tool to the Synthesis LlmAgent. It parses
-    the JSON strings produced by the CVE and OSINT agents, runs them through
-    the :class:`~agents.scoring.RiskScorer`, generates recommendations, and
-    returns a consolidated JSON result.
-
-    Args:
-        cve_data_json: JSON string of CVE findings (from session state
-            key ``cve_findings``).
-        osint_data_json: JSON string of OSINT findings (from session state
-            key ``osint_findings``).
-
-    Returns:
-        A JSON string containing the risk score, breakdown, and
-        recommendations.
+    Deliberately small: three free-text fields and nothing numeric, so a local
+    model can satisfy the schema in one short generation.
     """
-    try:
-        cve_data: dict[str, Any] = json.loads(cve_data_json) if cve_data_json else {}
-    except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("Failed to parse cve_data_json: %s", exc)
-        cve_data = {}
 
-    try:
-        osint_data: dict[str, Any] = json.loads(osint_data_json) if osint_data_json else {}
-    except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("Failed to parse osint_data_json: %s", exc)
-        osint_data = {}
-
-    score_data = _scorer.calculate_risk_score(cve_data, osint_data)
-    recommendations = generate_recommendations(score_data, cve_data, osint_data)
-
-    result = {
-        **score_data,
-        "recommendations": recommendations,
-        "assessed_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    logger.info(
-        "Risk score tool returned: %.2f (%s)",
-        score_data["overall_score"],
-        score_data["risk_level"],
+    executive_summary: str = Field(
+        description=(
+            "A 3-5 sentence executive summary for C-level stakeholders "
+            "describing the vendor's overall security posture and the most "
+            "significant findings."
+        )
     )
-    return json.dumps(result, indent=2)
+    cve_analysis: str = Field(
+        description=(
+            "A paragraph analysing the vulnerability findings: total CVE "
+            "count, average CVSS, and the split of critical vs high severity."
+        )
+    )
+    osint_analysis: str = Field(
+        description=(
+            "A paragraph analysing breach history, compliance issues, and "
+            "security incidents surfaced by OSINT research."
+        )
+    )
 
 
 # ── Agent Instruction Prompt ────────────────────────────────────────────────
 
 _SYNTHESIS_INSTRUCTION = """\
-You are a senior cybersecurity risk analyst responsible for synthesising \
-research findings into a comprehensive vendor risk assessment report.
+You are a senior cybersecurity risk analyst. Write the narrative sections of a \
+vendor risk assessment report for the vendor named `{vendor_name}`.
 
-## Your Mission
-Combine the OSINT and CVE research findings, compute a deterministic risk \
-score, and produce a polished executive-level report for the vendor named in \
-`{vendor_name}`.
+Two research agents have already gathered the findings below.
 
-## Steps — execute ALL of them in order
+CVE findings (JSON — fields such as `total_cves`, `critical_count`, \
+`high_count`, `medium_count`, `low_count`, `avg_cvss_score`):
+{cve_findings}
 
-### Step 1 — Review Findings
-The previous agents have already gathered data. You have access to:
-- `osint_findings` — JSON from the OSINT agent (breaches, compliance, incidents)
-- `cve_findings` — JSON from the CVE agent (vulnerabilities, severity counts)
+OSINT findings (JSON — breaches, compliance issues, security incidents):
+{osint_findings}
 
-Review all available findings from the conversation context.
+Cite the exact numbers from the CVE findings above; treat a missing field as 0 \
+and never claim a count is "unknown" when the field is present.
 
-### Step 2 — Compute Risk Score
-Call the `calculate_risk_score_tool` with:
-- `cve_data_json`: the CVE findings as a JSON string
-- `osint_data_json`: the OSINT findings as a JSON string
+A separate deterministic engine computes the numeric 0-100 risk score and risk \
+level. Do NOT invent, state, or guess a specific numeric score or risk level — \
+focus entirely on describing the qualitative findings.
 
-If findings are not available, pass empty JSON objects "{}".
+Produce a JSON object with exactly these three string fields:
+- `executive_summary`: 3-5 sentences summarising the vendor's overall security \
+posture and the most significant findings, suitable for C-level stakeholders.
+- `cve_analysis`: a concise paragraph on the vulnerability findings — total CVE \
+count, average CVSS, and the distribution of critical vs high-severity issues.
+- `osint_analysis`: a concise paragraph on breach history, compliance issues, \
+and security incidents.
 
-This tool returns the deterministic risk score, breakdown, and \
-recommendations.
-
-### Step 3 — Write Executive Summary
-Write a concise 3-5 sentence executive summary suitable for C-level \
-stakeholders. Include the overall risk score, risk level, and the most \
-significant findings.
-
-### Step 4 — Write Detailed Analysis
-Write two detailed analysis sections:
-- **CVE Analysis**: Summarise vulnerability findings, highlighting the \
-  total count, average severity score, and the distribution of critical vs \
-  high vulnerabilities.
-- **OSINT Analysis**: Summarise breach history, compliance issues, security \
-  incidents, and news sentiment.
-
-### Step 5 — Compile Final Report
-Your final response MUST be a **single JSON object** (no extra text before \
-or after, no markdown code fences) with exactly this structure:
-
-```json
-{
-  "vendor_name": "<vendor name>",
-  "risk_score": <float 0-100>,
-  "risk_level": "LOW / MEDIUM / HIGH / CRITICAL",
-  "risk_color": "<hex color>",
-  "score_breakdown": {
-    "<factor>": {
-      "score": <float>,
-      "weight": <float>,
-      "weighted_score": <float>,
-      "description": "..."
-    }
-  },
-  "executive_summary": "<3-5 sentence summary>",
-  "cve_analysis": "<detailed CVE analysis narrative>",
-  "osint_analysis": "<detailed OSINT analysis narrative>",
-  "recommendations": ["<recommendation 1>", "..."],
-  "assessed_at": "<ISO 8601 timestamp>"
-}
-```
-
-## Important Rules
-- The `risk_score`, `risk_level`, `risk_color`, `score_breakdown`, and \
-  `recommendations` MUST come directly from the `calculate_risk_score_tool` \
-  output. Do NOT override or modify the deterministic score.
-- The `executive_summary`, `cve_analysis`, and `osint_analysis` are your \
-  own written narratives — make them insightful and actionable.
-- `assessed_at` comes from the tool output.
-- If either `cve_findings` or `osint_findings` is missing or empty, note \
-  that in the report but still produce a score with the available data.
-- Do NOT call any tool named `save_session_state` — it does not exist. \
-  Simply output the JSON directly as your response.
+Ground every statement in the findings above. If a category has no findings, \
+say so plainly rather than speculating. Output only the JSON object.
 """
 
 
-def create_synthesis_agent() -> LlmAgent:
-    """Create and return the Synthesis LlmAgent.
+def create_synthesis_agent(model: str | None = None) -> LlmAgent:
+    """Create and return the narrative Synthesis ``LlmAgent``.
 
-    The agent is equipped with the ``calculate_risk_score_tool`` which wraps
-    the deterministic :class:`~agents.scoring.RiskScorer` engine.
+    The agent is constrained to :class:`SynthesisNarrative` via ``output_schema``
+    (no tools), so its entire output is a small, schema-valid JSON object. The
+    deterministic score is applied separately by the orchestrator.
+
+    Args:
+        model: Optional model id override. Falls back to ``AGENT_MODEL`` /
+            a local Ollama default via :func:`agents.model_factory.build_model`.
 
     Returns:
-        A configured :class:`google.adk.agents.LlmAgent` ready to be used
-        as the final stage of the orchestrator pipeline.
+        A configured :class:`google.adk.agents.LlmAgent` for the final stage of
+        the pipeline.
     """
     logger.info("Creating Synthesis agent")
 
-    model = os.getenv("AGENT_MODEL", "gemini-2.0-flash-lite")
-    logger.info("Synthesis agent using model: %s", model)
+    # Pass the schema to the factory so Ollama models get an explicit
+    # response_format (belt-and-suspenders alongside ADK's output_schema).
+    resolved = build_model(model, response_schema=SynthesisNarrative)
+    logger.info(
+        "Synthesis agent using model: %s", getattr(resolved, "model", resolved)
+    )
 
     agent = LlmAgent(
         name="synthesis_agent",
-        model=model,
+        model=resolved,
         instruction=_SYNTHESIS_INSTRUCTION,
-        tools=[calculate_risk_score_tool],
-        output_key="final_report",
+        output_schema=SynthesisNarrative,
+        output_key="synthesis_narrative",
+        # output_schema is incompatible with agent transfer; keep synthesis
+        # self-contained (it has no sub-agents / peers to hand off to anyway).
+        disallow_transfer_to_parent=True,
+        disallow_transfer_to_peers=True,
     )
 
     logger.info("Synthesis agent created successfully")

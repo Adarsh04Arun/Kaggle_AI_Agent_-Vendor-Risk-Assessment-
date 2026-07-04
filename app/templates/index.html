@@ -20,6 +20,15 @@
   <!-- ─── Header ──────────────────────────────────────────── -->
   <header class="app-header">
     <div class="app-header__glow" aria-hidden="true"></div>
+
+    <div class="app-header__bar">
+      <span class="status-chip" id="status-chip" title="System status">
+        <span class="status-chip__dot" id="status-chip-dot"></span>
+        <span id="status-chip-text">Checking…</span>
+      </span>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle light / dark theme" title="Toggle theme">🌙</button>
+    </div>
+
     <h1 class="app-header__title">Vendor Risk Assessor</h1>
     <p class="app-header__subtitle">AI-Powered Multi-Agent Cybersecurity Intelligence</p>
   </header>
@@ -60,6 +69,24 @@
       </button>
     </section>
 
+    <!-- ── Empty State ────────────────────────────────────── -->
+    <section class="empty-state glass-card" id="empty-state" aria-hidden="false">
+      <div class="empty-state__steps">
+        <div class="empty-state__step">
+          <span class="empty-state__num">1</span>
+          <span>Add one or more vendors above</span>
+        </div>
+        <div class="empty-state__step">
+          <span class="empty-state__num">2</span>
+          <span>Agents scan CVEs &amp; OSINT in parallel</span>
+        </div>
+        <div class="empty-state__step">
+          <span class="empty-state__num">3</span>
+          <span>Get a scored risk report &amp; comparison</span>
+        </div>
+      </div>
+    </section>
+
     <!-- ── Progress Section ───────────────────────────────── -->
     <section class="progress-section glass-card" id="progress-section" aria-label="Assessment Progress">
       <h2 class="progress-section__title">
@@ -81,7 +108,13 @@
 
     <!-- ── Results Section ────────────────────────────────── -->
     <section class="results-section" id="results-section" aria-label="Assessment Results">
-      <h2 class="results-section__title">Assessment Results</h2>
+      <div class="results-section__head">
+        <h2 class="results-section__title">Assessment Results</h2>
+        <div class="results-actions">
+          <button class="btn-export" id="btn-export-json" type="button">&#x2B07; JSON</button>
+          <button class="btn-export" id="btn-export-md" type="button">&#x2B07; Markdown</button>
+        </div>
+      </div>
 
       <!-- Summary Stats -->
       <div class="results-summary" id="results-summary">
@@ -132,7 +165,7 @@
 
   <!-- ─── Footer ──────────────────────────────────────────── -->
   <footer class="app-footer">
-    <p>Vendor Risk Assessor &mdash; Built with Multi-Agent AI &bull; Powered by LangGraph</p>
+    <p>Vendor Risk Assessor &mdash; Built with Multi-Agent AI &bull; Powered by Google ADK &amp; MCP</p>
   </footer>
 
   <!-- ─── SVG Defs (gradient for risk gauges) ─────────────── -->

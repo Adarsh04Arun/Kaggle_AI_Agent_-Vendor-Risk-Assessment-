@@ -19,6 +19,9 @@ nvdlib>=0.7.8
 # Search
 duckduckgo-search>=6.3.0
 
+# CLI UI
+rich>=13.0.0
+
 # Configuration
 python-dotenv>=1.0.0
 

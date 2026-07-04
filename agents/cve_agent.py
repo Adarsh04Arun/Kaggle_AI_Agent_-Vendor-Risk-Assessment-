@@ -12,10 +12,11 @@ as a JSON string conforming to a well-defined schema.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from google.adk.agents import LlmAgent
+
+from agents.model_factory import build_model
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +58,15 @@ JSON object** (no extra text, no markdown fences) with exactly this structure:
 """
 
 
-def create_cve_agent(mcp_tools: list[Any]) -> LlmAgent:
+def create_cve_agent(mcp_tools: list[Any], model: str | None = None) -> LlmAgent:
     """Create and return the CVE research LlmAgent.
 
     Args:
         mcp_tools: List of MCP tool instances to attach to the agent.
             Expected tools include ``search_cves``, ``get_cve_details``,
             ``get_vendor_products``, and ``get_vendor_cve_summary``.
+        model: Optional model id override. Falls back to ``AGENT_MODEL`` /
+            a local Ollama default via :func:`agents.model_factory.build_model`.
 
     Returns:
         A configured :class:`google.adk.agents.LlmAgent` ready to be used
@@ -74,12 +77,12 @@ def create_cve_agent(mcp_tools: list[Any]) -> LlmAgent:
         len(mcp_tools) if mcp_tools else 0,
     )
 
-    model = os.getenv("AGENT_MODEL", "gemini-2.0-flash-lite")
-    logger.info("CVE agent using model: %s", model)
+    resolved = build_model(model)
+    logger.info("CVE agent using model: %s", getattr(resolved, "model", resolved))
 
     agent = LlmAgent(
         name="cve_agent",
-        model=model,
+        model=resolved,
         instruction=_CVE_INSTRUCTION,
         tools=mcp_tools or [],
         output_key="cve_findings",

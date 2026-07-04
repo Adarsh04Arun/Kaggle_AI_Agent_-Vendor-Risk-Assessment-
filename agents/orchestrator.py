@@ -27,7 +27,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine
 
 from google.adk.agents import LlmAgent
@@ -77,6 +79,7 @@ class VendorRiskOrchestrator:
         self,
         mcp_server_url: str | None = None,
         mcp_server_command: list[str] | None = None,
+        model: str | None = None,
     ) -> None:
         if mcp_server_url and mcp_server_command:
             raise ValueError(
@@ -86,6 +89,9 @@ class VendorRiskOrchestrator:
 
         self._mcp_server_url = mcp_server_url
         self._mcp_server_command = mcp_server_command
+        # Model id for the agent pipeline. The web app passes a Gemini model;
+        # the CLI relies on AGENT_MODEL (Ollama). None → resolved per-agent.
+        self._model = model
 
         # Initialised during setup()
         self._mcp_toolset: MCPToolset | None = None
@@ -172,7 +178,14 @@ class VendorRiskOrchestrator:
             app_name="vendor_risk_assessor",
             user_id="system",
             session_id=session_id,
-            state={"vendor_name": vendor_name},
+            # Seed empty findings so the synthesis agent's instruction
+            # templating ({cve_findings}/{osint_findings}) is always safe — the
+            # parallel research agents overwrite these via their output_key.
+            state={
+                "vendor_name": vendor_name,
+                "cve_findings": "{}",
+                "osint_findings": "{}",
+            },
         )
 
         self._notify(progress_callback, vendor_name, "Gathering intelligence", 0.1)
@@ -228,163 +241,93 @@ class VendorRiskOrchestrator:
                 session_id=session_id,
             )
 
-            raw_report = (
-                updated_session.state.get("final_report", "{}")
-                if updated_session
-                else "{}"
+            # ── Parse structured findings ──────────────────────────────
+            # Written to session state by the CVE and OSINT agents. Reused for
+            # deterministic scoring and the machine-readable metrics block.
+            cve_data = self._loads_loose(
+                updated_session.state.get("cve_findings") if updated_session else None
+            )
+            osint_data = self._loads_loose(
+                updated_session.state.get("osint_findings") if updated_session else None
             )
 
-            if isinstance(raw_report, str):
-                try:
-                    final_report = json.loads(raw_report)
-                except json.JSONDecodeError:
-                    # LLMs often wrap JSON in markdown fences: ```json ... ```
-                    import re
-                    json_match = re.search(
-                        r"```(?:json)?\s*\n?(.*?)\n?\s*```",
-                        raw_report,
-                        re.DOTALL,
-                    )
-                    if json_match:
-                        try:
-                            final_report = json.loads(json_match.group(1))
-                        except json.JSONDecodeError:
-                            pass
-                    
-                    # Try to find a top-level JSON object in the string
-                    if not isinstance(final_report, dict) or not final_report:
-                        brace_match = re.search(r"\{.*\}", raw_report, re.DOTALL)
-                        if brace_match:
-                            try:
-                                final_report = json.loads(brace_match.group(0))
-                            except json.JSONDecodeError:
-                                pass
-                    
-                    if not isinstance(final_report, dict) or not final_report:
-                        logger.warning(
-                            "Could not parse final_report JSON for %s — "
-                            "raw output length: %d",
-                            vendor_name,
-                            len(raw_report),
-                        )
-                        final_report = {"raw_output": raw_report}
-            elif isinstance(raw_report, dict):
-                final_report = raw_report
+            # ── Deterministic scoring (always) ─────────────────────────
+            # The score is never produced by the LLM — it is computed in code
+            # from the findings, so it is auditable and identical for identical
+            # inputs. The synthesis agent only supplies narrative prose.
+            self._notify(progress_callback, vendor_name, "Scoring findings", 0.9)
 
-            # Ensure vendor_name is always present
-            final_report.setdefault("vendor_name", vendor_name)
+            from agents.scoring import RiskScorer, generate_recommendations
 
-            # ── Fallback scoring ───────────────────────────────────────
-            # If the synthesis agent didn't produce a proper report
-            # (common with smaller local LLMs), compute the score
-            # deterministically from whatever data the other agents
-            # gathered.
-            if "risk_score" not in final_report or "risk_level" not in final_report:
+            scorer = RiskScorer()
+            score_data = scorer.calculate_risk_score(cve_data, osint_data)
+            recommendations = generate_recommendations(
+                score_data, cve_data, osint_data
+            )
+
+            # ── Merge the structured narrative (§5.7) ──────────────────
+            # The synthesis agent emits a schema-constrained
+            # {executive_summary, cve_analysis, osint_analysis} object. If a
+            # (usually small, local) model still fails to produce usable prose,
+            # fall back to a deterministic template so the report is complete.
+            narrative = self._loads_loose(
+                updated_session.state.get("synthesis_narrative")
+                if updated_session
+                else None
+            )
+            exec_summary = str(narrative.get("executive_summary", "")).strip()
+            cve_analysis = str(narrative.get("cve_analysis", "")).strip()
+            osint_analysis = str(narrative.get("osint_analysis", "")).strip()
+
+            if exec_summary and cve_analysis and osint_analysis:
+                synthesis_method = "llm"
+            else:
+                synthesis_method = "template"
                 logger.warning(
-                    "Synthesis agent did not produce a complete report for "
-                    "%s — falling back to deterministic scoring",
+                    "Synthesis narrative incomplete for %s — using deterministic "
+                    "narrative template",
                     vendor_name,
                 )
-                self._notify(
-                    progress_callback, vendor_name,
-                    "Running fallback scoring", 0.9,
+                exec_summary = exec_summary or score_data["summary"]
+                cve_analysis = cve_analysis or (
+                    f"Found {cve_data.get('total_cves', 0)} CVEs: "
+                    f"{cve_data.get('critical_count', 0)} critical, "
+                    f"{cve_data.get('high_count', 0)} high, "
+                    f"{cve_data.get('medium_count', 0)} medium, "
+                    f"{cve_data.get('low_count', 0)} low. "
+                    f"Average CVSS: {cve_data.get('avg_cvss_score', 0.0)}"
+                )
+                osint_analysis = osint_analysis or (
+                    f"{osint_data.get('breach_count', 0)} breach(es) found. "
+                    f"{len(osint_data.get('compliance_issues', []))} compliance issue(s). "
+                    f"{len(osint_data.get('security_incidents', []))} security incident(s)."
                 )
 
-                from agents.scoring import RiskScorer, generate_recommendations
+            final_report = {
+                "vendor_name": vendor_name,
+                "risk_score": score_data["overall_score"],
+                "risk_level": score_data["risk_level"],
+                "risk_color": score_data["risk_color"],
+                "score_breakdown": score_data["breakdown"],
+                "executive_summary": exec_summary,
+                "cve_analysis": cve_analysis,
+                "osint_analysis": osint_analysis,
+                "recommendations": recommendations,
+                "assessed_at": datetime.now(timezone.utc).isoformat(),
+                # Score is always deterministic; narrative may be LLM or template.
+                "scoring_method": "deterministic",
+                "synthesis_method": synthesis_method,
+                # Machine-readable numbers for the web matrix / CLI summary table.
+                "metrics": self._build_metrics(cve_data, osint_data),
+            }
 
-                # Try to get structured data from session state
-                raw_cve = (
-                    updated_session.state.get("cve_findings", "{}")
-                    if updated_session else "{}"
-                )
-                raw_osint = (
-                    updated_session.state.get("osint_findings", "{}")
-                    if updated_session else "{}"
-                )
-
-                # Parse CVE findings
-                cve_data = {}
-                if isinstance(raw_cve, dict):
-                    cve_data = raw_cve
-                elif isinstance(raw_cve, str):
-                    try:
-                        cve_data = json.loads(raw_cve)
-                    except json.JSONDecodeError:
-                        import re as _re
-                        _m = _re.search(r"\{.*\}", raw_cve, _re.DOTALL)
-                        if _m:
-                            try:
-                                cve_data = json.loads(_m.group(0))
-                            except json.JSONDecodeError:
-                                pass
-
-                # Also check if raw_output itself contains CVE data
-                if not cve_data and "raw_output" in final_report:
-                    raw_out = final_report["raw_output"]
-                    if isinstance(raw_out, str):
-                        import re as _re
-                        _m = _re.search(r"\{.*\}", raw_out, _re.DOTALL)
-                        if _m:
-                            try:
-                                parsed = json.loads(_m.group(0))
-                                if "total_cves" in parsed or "critical_count" in parsed:
-                                    cve_data = parsed
-                            except json.JSONDecodeError:
-                                pass
-
-                # Parse OSINT findings
-                osint_data = {}
-                if isinstance(raw_osint, dict):
-                    osint_data = raw_osint
-                elif isinstance(raw_osint, str):
-                    try:
-                        osint_data = json.loads(raw_osint)
-                    except json.JSONDecodeError:
-                        import re as _re
-                        _m = _re.search(r"\{.*\}", raw_osint, _re.DOTALL)
-                        if _m:
-                            try:
-                                osint_data = json.loads(_m.group(0))
-                            except json.JSONDecodeError:
-                                pass
-
-                # Run deterministic scoring
-                scorer = RiskScorer()
-                score_data = scorer.calculate_risk_score(cve_data, osint_data)
-                recommendations = generate_recommendations(
-                    score_data, cve_data, osint_data
-                )
-
-                final_report = {
-                    "vendor_name": vendor_name,
-                    "risk_score": score_data["overall_score"],
-                    "risk_level": score_data["risk_level"],
-                    "risk_color": score_data["risk_color"],
-                    "score_breakdown": score_data["breakdown"],
-                    "executive_summary": score_data["summary"],
-                    "cve_analysis": (
-                        f"Found {cve_data.get('total_cves', 0)} CVEs: "
-                        f"{cve_data.get('critical_count', 0)} critical, "
-                        f"{cve_data.get('high_count', 0)} high, "
-                        f"{cve_data.get('medium_count', 0)} medium, "
-                        f"{cve_data.get('low_count', 0)} low. "
-                        f"Average CVSS: {cve_data.get('avg_cvss_score', 0.0)}"
-                    ),
-                    "osint_analysis": (
-                        f"{osint_data.get('breach_count', 0)} breach(es) found. "
-                        f"{len(osint_data.get('compliance_issues', []))} compliance issue(s). "
-                        f"{len(osint_data.get('security_incidents', []))} security incident(s)."
-                    ),
-                    "recommendations": recommendations,
-                    "scoring_method": "deterministic_fallback",
-                }
-
-                logger.info(
-                    "Fallback scoring complete for %s: %.2f (%s)",
-                    vendor_name,
-                    score_data["overall_score"],
-                    score_data["risk_level"],
-                )
+            logger.info(
+                "Assessment scored for %s: %.2f (%s) · narrative=%s",
+                vendor_name,
+                score_data["overall_score"],
+                score_data["risk_level"],
+                synthesis_method,
+            )
 
         except Exception:
             logger.exception("Assessment failed for vendor: %s", vendor_name)
@@ -488,6 +431,9 @@ class VendorRiskOrchestrator:
                             args=self._mcp_server_command[1:]
                             if len(self._mcp_server_command) > 1
                             else [],
+                            # Forward the parent environment (e.g. MCP_LOG_LEVEL)
+                            # — the MCP SDK otherwise spawns with a minimal env.
+                            env=dict(os.environ),
                         ),
                         timeout=120.0,
                     )
@@ -513,9 +459,9 @@ class VendorRiskOrchestrator:
         # Build the tools list: include the MCP toolset if available
         mcp_tools = [self._mcp_toolset] if self._mcp_toolset else []
 
-        osint_agent = create_osint_agent(mcp_tools)
-        cve_agent = create_cve_agent(mcp_tools)
-        synthesis_agent = create_synthesis_agent()
+        osint_agent = create_osint_agent(mcp_tools, model=self._model)
+        cve_agent = create_cve_agent(mcp_tools, model=self._model)
+        synthesis_agent = create_synthesis_agent(model=self._model)
 
         # Stage 1: Parallel data gathering
         parallel_research = ParallelAgent(
@@ -530,6 +476,80 @@ class VendorRiskOrchestrator:
         )
 
         logger.info("Agent pipeline built successfully")
+
+    @staticmethod
+    def _loads_loose(raw: Any) -> dict[str, Any]:
+        """Best-effort parse of a possibly-messy JSON payload into a dict.
+
+        Handles the three shapes local models routinely emit: a clean dict, a
+        raw JSON string, JSON wrapped in ``` ```json ``` ``` fences, or JSON
+        embedded in surrounding prose. Returns ``{}`` when nothing parses.
+        """
+        if isinstance(raw, dict):
+            return raw
+        if not isinstance(raw, str) or not raw.strip():
+            return {}
+
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            pass
+
+        import re
+
+        # Fenced ```json ... ``` block first, then any {...} object.
+        fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", raw, re.DOTALL)
+        if fence:
+            try:
+                parsed = json.loads(fence.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        brace = re.search(r"\{.*\}", raw, re.DOTALL)
+        if brace:
+            try:
+                parsed = json.loads(brace.group(0))
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        return {}
+
+    @staticmethod
+    def _build_metrics(
+        cve_data: dict[str, Any],
+        osint_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build a flat, machine-readable metrics block for the UIs."""
+
+        def _count(value: Any) -> int:
+            if isinstance(value, list):
+                return len(value)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        try:
+            avg_cvss = round(float(cve_data.get("avg_cvss_score", 0.0) or 0.0), 1)
+        except (TypeError, ValueError):
+            avg_cvss = 0.0
+
+        return {
+            "total_cves": _count(cve_data.get("total_cves", 0)),
+            "critical_count": _count(cve_data.get("critical_count", 0)),
+            "high_count": _count(cve_data.get("high_count", 0)),
+            "medium_count": _count(cve_data.get("medium_count", 0)),
+            "low_count": _count(cve_data.get("low_count", 0)),
+            "avg_cvss": avg_cvss,
+            "breach_count": _count(osint_data.get("breach_count", 0)),
+            "compliance_issues": _count(osint_data.get("compliance_issues", [])),
+            "security_incidents": _count(osint_data.get("security_incidents", [])),
+        }
 
     @staticmethod
     def _notify(
@@ -554,6 +574,7 @@ async def run_assessment(
     mcp_transport: str = "stdio",
     mcp_server_url: str | None = None,
     mcp_server_command: list[str] | None = None,
+    model: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run vendor risk assessments with minimal boilerplate.
 
@@ -579,11 +600,13 @@ async def run_assessment(
     if mcp_transport == "sse":
         orchestrator = VendorRiskOrchestrator(
             mcp_server_url=mcp_server_url or "http://localhost:8080/sse",
+            model=model,
         )
     else:
         orchestrator = VendorRiskOrchestrator(
             mcp_server_command=mcp_server_command
             or ["python", "-m", "mcp_server.server"],
+            model=model,
         )
 
     try:

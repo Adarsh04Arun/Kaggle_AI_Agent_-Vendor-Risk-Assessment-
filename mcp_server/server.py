@@ -25,7 +25,7 @@ from mcp_server.web_search_client import WebSearchClient
 # ---------------------------------------------------------------------------
 load_dotenv()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, os.getenv("MCP_LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -40,8 +40,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     nvd_api_key = os.getenv("NVD_API_KEY")
     nvd_client = NVDClient(api_key=nvd_api_key)
 
-    # Determine web-search backend
-    search_backend = os.getenv("SEARCH_BACKEND", "duckduckgo").lower()
+    # Determine web-search backend (accept either env var name)
+    search_backend = (
+        os.getenv("SEARCH_BACKEND") or os.getenv("SEARCH_PROVIDER") or "duckduckgo"
+    ).lower()
     web_client = WebSearchClient(
         backend=search_backend,  # type: ignore[arg-type]
         tavily_api_key=os.getenv("TAVILY_API_KEY"),
@@ -69,11 +71,47 @@ mcp = FastMCP("vendor-risk-assessor", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
+# Context-protection caps
+# ---------------------------------------------------------------------------
+# Local models have a limited context window; oversized tool outputs get
+# silently truncated and the model "fills the gap" (i.e. hallucinates). We cap
+# result counts and snippet lengths before handing anything to the agent.
+_MAX_RESULTS = int(os.getenv("SEARCH_MAX_RESULTS", "6"))
+_MAX_SNIPPET = int(os.getenv("SEARCH_SNIPPET_CHARS", "300"))
+_MAX_CVE_RESULTS = int(os.getenv("CVE_MAX_RESULTS", "25"))
+
+
+# ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 def _json(obj: Any) -> str:
     """Serialise *obj* to a compact JSON string."""
     return json.dumps(obj, indent=2, default=str)
+
+
+def _trim_results(
+    results: list[dict[str, Any]],
+    *,
+    max_results: int = _MAX_RESULTS,
+    max_snippet: int = _MAX_SNIPPET,
+) -> list[dict[str, Any]]:
+    """Cap the number of search results and truncate long text fields.
+
+    Keeps the payload small enough to stay inside a local model's context
+    window while preserving the fields the agents actually read.
+    """
+    trimmed: list[dict[str, Any]] = []
+    for r in results[:max_results]:
+        snippet = (r.get("snippet") or "")[:max_snippet]
+        trimmed.append(
+            {
+                "title": (r.get("title") or "")[:160],
+                "snippet": snippet,
+                "url": r.get("url", ""),
+                "date": r.get("date", ""),
+            }
+        )
+    return trimmed
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +137,7 @@ async def search_cves(
     """
     ctx = mcp.get_context()
     nvd: NVDClient = ctx.request_context.lifespan_context["nvd_client"]
+    limit = min(limit, _MAX_CVE_RESULTS)
     results = await nvd.search_cves(vendor, limit=limit, days_back=days_back)
     return _json({"vendor": vendor, "total": len(results), "cves": results})
 
@@ -148,7 +187,8 @@ async def search_web(query: str, num_results: int = 10) -> str:
     """
     ctx = mcp.get_context()
     web: WebSearchClient = ctx.request_context.lifespan_context["web_client"]
-    results = await web.search(query, num_results=num_results)
+    num_results = min(num_results, _MAX_RESULTS)
+    results = _trim_results(await web.search(query, num_results=num_results))
     return _json({"query": query, "total": len(results), "results": results})
 
 
@@ -165,7 +205,9 @@ async def search_vendor_breaches(vendor: str, years_back: int = 3) -> str:
     """
     ctx = mcp.get_context()
     web: WebSearchClient = ctx.request_context.lifespan_context["web_client"]
-    results = await web.search_vendor_breaches(vendor, years_back=years_back)
+    results = _trim_results(
+        await web.search_vendor_breaches(vendor, years_back=years_back)
+    )
     return _json({"vendor": vendor, "total": len(results), "results": results})
 
 
@@ -183,7 +225,7 @@ async def search_vendor_compliance(vendor: str) -> str:
     """
     ctx = mcp.get_context()
     web: WebSearchClient = ctx.request_context.lifespan_context["web_client"]
-    results = await web.search_vendor_compliance(vendor)
+    results = _trim_results(await web.search_vendor_compliance(vendor))
     return _json({"vendor": vendor, "total": len(results), "results": results})
 
 
@@ -199,7 +241,7 @@ async def search_vendor_news(vendor: str) -> str:
     """
     ctx = mcp.get_context()
     web: WebSearchClient = ctx.request_context.lifespan_context["web_client"]
-    results = await web.search_vendor_news(vendor)
+    results = _trim_results(await web.search_vendor_news(vendor))
     return _json({"vendor": vendor, "total": len(results), "results": results})
 
 

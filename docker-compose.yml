@@ -1,3 +1,9 @@
+# Runs the Gemini-powered web dashboard. The MCP tool-server is launched
+# in-process over stdio (see run.py / MCP_TRANSPORT), so a single container is
+# self-contained — no separate MCP service is required.
+#
+# Requires a .env file with GOOGLE_API_KEY (for Gemini) and, ideally,
+# NVD_API_KEY. See .env.example.
 services:
   app:
     build: .
@@ -6,19 +12,11 @@ services:
       - "8080:8080"
     env_file:
       - .env
-    volumes:
-      - .:/app          # live-reload during development
-    depends_on:
-      mcp-server:
-        condition: service_started
-    restart: unless-stopped
-
-  mcp-server:
-    build: .
-    container_name: vendor-risk-mcp
-    command: python -m mcp_server.server --transport sse --port 8081
-    ports:
-      - "8081:8081"
-    env_file:
-      - .env
+    environment:
+      # Pin the in-container port to the published one. .env sets PORT=8000 for
+      # local `python run.py`, but inside the container we standardise on 8080
+      # (matches EXPOSE, the health-check, and Cloud Run's default).
+      - PORT=8080
+      # Spawn the MCP tool-server in-process rather than as a second service.
+      - MCP_TRANSPORT=stdio
     restart: unless-stopped

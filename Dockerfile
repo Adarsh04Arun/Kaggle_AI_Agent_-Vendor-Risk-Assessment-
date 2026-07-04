@@ -12,6 +12,8 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
+# This image serves the Gemini-powered web dashboard (WEB_AGENT_MODEL).
+# The CLI's local-Ollama path is a host-side workflow and is not containerised.
 LABEL maintainer="vendor-risk-assessor" \
       description="Automated Vendor Risk Assessor — AI-powered cybersecurity assessment"
 
@@ -46,6 +48,6 @@ USER appuser
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8080/api/health || exit 1
+    CMD curl -f "http://localhost:${PORT}/api/health" || exit 1
 
 CMD ["python", "run.py"]

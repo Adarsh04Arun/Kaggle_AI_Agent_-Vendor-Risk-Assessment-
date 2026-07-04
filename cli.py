@@ -1,60 +1,88 @@
 #!/usr/bin/env python3
 """
-cli.py — Terminal interface for the Automated Vendor Risk Assessor.
+cli.py — Rich terminal interface for the Automated Vendor Risk Assessor.
 
-Assess one or more vendors from the command line with coloured output
-and a live progress indicator.
+Assess one or more vendors from the command line with a live progress view,
+per-vendor report panels, and a comparison table. The CLI uses the local
+**Ollama** model (via ``AGENT_MODEL``); the web interface uses Gemini.
 
 Usage:
     python cli.py assess "Acme Corp" "Globex" "Initech"
-    python cli.py assess vendor1 vendor2 --no-color
+    python cli.py assess "Acme Corp" --json > report.json
+    python cli.py assess "Acme Corp" --no-color
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import logging
+import os
 import sys
+import warnings
+from contextlib import nullcontext
 from typing import Any
 
 from dotenv import load_dotenv
 
-import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="google.adk")
+
+# Ensure emoji / box-drawing glyphs render on legacy Windows consoles (cp1252)
+# instead of raising UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+# Keep the rich UI clean: suppress the INFO log flood from the agents, MCP
+# server (subprocess, via MCP_LOG_LEVEL), httpx, google-adk, litellm, ddgs,
+# etc. Set MCP_LOG_LEVEL / a lower level yourself if you need to debug.
+os.environ.setdefault("MCP_LOG_LEVEL", "WARNING")
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger().setLevel(logging.WARNING)
+for _noisy in (
+    "httpx", "httpcore", "primp", "google_genai", "google.adk", "google_adk",
+    "LiteLLM", "litellm", "mcp", "asyncio", "urllib3", "ddgs", "duckduckgo_search",
+):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+# Agent warnings (e.g. "synthesis narrative incomplete") would disrupt the live
+# progress panel; we surface that state as a tidy per-report footnote instead
+# (see synthesis_method in _report_panel).
+logging.getLogger("agents").setLevel(logging.ERROR)
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# ANSI colour helpers
+# Rich — required for the polished UI (declared in requirements.txt)
 # ---------------------------------------------------------------------------
 
-_RESET = "\033[0m"
-_BOLD = "\033[1m"
-_DIM = "\033[2m"
+try:
+    from rich import box
+    from rich.align import Align
+    from rich.console import Console, Group
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
 
-_COLORS: dict[str, str] = {
-    "critical": "\033[91m",   # bright red
-    "high":     "\033[31m",   # red
-    "medium":   "\033[33m",   # yellow
-    "low":      "\033[32m",   # green
-    "info":     "\033[36m",   # cyan
-    "header":   "\033[94m",   # bright blue
-    "success":  "\033[92m",   # bright green
-    "error":    "\033[91m",   # bright red
+    _RICH_AVAILABLE = True
+except ImportError:  # pragma: no cover - graceful degradation
+    _RICH_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
+# Risk styling
+# ---------------------------------------------------------------------------
+
+_RISK_STYLE: dict[str, str] = {
+    "critical": "bold red",
+    "high": "dark_orange3",
+    "medium": "yellow3",
+    "low": "green3",
+    "unknown": "grey58",
 }
-
-
-def _c(text: str, style: str, *, use_color: bool = True) -> str:
-    """Wrap *text* in ANSI colour codes if colour is enabled."""
-    if not use_color:
-        return text
-    code = _COLORS.get(style, "")
-    return f"{code}{text}{_RESET}" if code else text
-
-
-# ---------------------------------------------------------------------------
-# Pretty-printing helpers
-# ---------------------------------------------------------------------------
 
 _RISK_EMOJI: dict[str, str] = {
     "critical": "🔴",
@@ -65,118 +93,256 @@ _RISK_EMOJI: dict[str, str] = {
 }
 
 
-def _risk_bar(score: float, width: int = 20) -> str:
-    """Render a simple text progress-bar for a 0-100 risk score."""
-    filled = min(int(score / 100 * width), width)
-    return f"[{'█' * filled}{'░' * (width - filled)}] {score:.1f}/100"
+def _risk_key(report: dict[str, Any]) -> str:
+    return str(
+        report.get("risk_level") or report.get("overall_risk") or "unknown"
+    ).lower()
 
 
-def _print_divider(char: str = "─", width: int = 72) -> None:
-    print(char * width)
+def _score_of(report: dict[str, Any]) -> float:
+    raw = report.get("risk_score")
+    if raw is None:
+        raw = report.get("overall_score", 0)
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def _print_report(vendor: str, report: dict[str, Any], *, use_color: bool) -> None:
-    """Pretty-print a single vendor assessment report."""
-    _print_divider("═")
-    print(f"  {_BOLD}{_c(vendor.upper(), 'header', use_color=use_color)}{_RESET}")
-    _print_divider("─")
-
-    risk_level: str = str(report.get("risk_level", report.get("overall_risk", "unknown"))).lower()
-    risk_score: float = float(report.get("risk_score", report.get("overall_score", 0)))
-    emoji = _RISK_EMOJI.get(risk_level, "⚪")
-
-    print(f"  {_BOLD}Risk Level{_RESET} : {emoji}  {_c(risk_level.upper(), risk_level, use_color=use_color)}")
-    print(f"  {_BOLD}Risk Score{_RESET} : {_risk_bar(risk_score)}")
-    print()
-
-    # Summary
-    summary = report.get("summary", report.get("executive_summary", ""))
-    if summary:
-        print(f"  {_BOLD}{_c('SUMMARY', 'header', use_color=use_color)}{_RESET}")
-        for line in _wrap(str(summary), 68):
-            print(f"    {line}")
-        print()
-
-    # CVE Analysis
-    cve_analysis = report.get("cve_analysis")
-    if cve_analysis:
-        print(f"  {_BOLD}{_c('CVE & VULNERABILITY ANALYSIS', 'header', use_color=use_color)}{_RESET}")
-        for line in _wrap(str(cve_analysis), 68):
-            print(f"    {line}")
-        print()
-
-    # OSINT Analysis
-    osint_analysis = report.get("osint_analysis")
-    if osint_analysis:
-        print(f"  {_BOLD}{_c('OSINT & THREAT INTELLIGENCE', 'header', use_color=use_color)}{_RESET}")
-        for line in _wrap(str(osint_analysis), 68):
-            print(f"    {line}")
-        print()
-
-    # Key findings / vulnerabilities
-    findings = report.get("findings", report.get("vulnerabilities", []))
-    if findings:
-        print(f"  {_BOLD}{_c('KEY FINDINGS', 'header', use_color=use_color)}{_RESET}")
-        for i, finding in enumerate(findings[:10], 1):
-            if isinstance(finding, dict):
-                label = finding.get("title", finding.get("id", f"Finding {i}"))
-                severity = str(finding.get("severity", "info")).lower()
-                print(f"    • {_c(label, severity, use_color=use_color)}")
-            else:
-                for line in _wrap(f"• {finding}", 68):
-                    print(f"    {line}")
-        print()
-
-    # Recommendations
-    recs = report.get("recommendations", [])
-    if recs:
-        print(f"  {_BOLD}{_c('RECOMMENDATIONS', 'header', use_color=use_color)}{_RESET}")
-        for i, rec in enumerate(recs, 1):
-            for line in _wrap(f"{i}. {rec}", 68):
-                if line.startswith(f"{i}."):
-                    print(f"    {line}")
-                else:
-                    print(f"       {line}")
-        print()
+# ---------------------------------------------------------------------------
+# Rich renderables
+# ---------------------------------------------------------------------------
 
 
-def _wrap(text: str, width: int) -> list[str]:
-    """Naïve word-wrap."""
-    words = text.split()
-    lines: list[str] = []
-    current: list[str] = []
-    length = 0
-    for word in words:
-        if length + len(word) + 1 > width and current:
-            lines.append(" ".join(current))
-            current = [word]
-            length = len(word)
+def _header() -> Panel:
+    title = Text("🛡  Automated Vendor Risk Assessor", style="bold cyan")
+    subtitle = Text(
+        "AI-Powered Multi-Agent Cybersecurity Intelligence", style="dim italic"
+    )
+    return Panel(
+        Align.center(Group(title, subtitle)),
+        box=box.DOUBLE,
+        border_style="cyan",
+        padding=(1, 2),
+    )
+
+
+def _score_bar(score: float, level: str, width: int = 26) -> Text:
+    filled = max(0, min(width, int(round(score / 100 * width))))
+    style = _RISK_STYLE.get(level, "cyan")
+    return Text.assemble(
+        ("█" * filled, style),
+        ("░" * (width - filled), "grey30"),
+        (f"  {score:.0f}", "bold"),
+        ("/100", "dim"),
+    )
+
+
+def _status_table(statuses: dict[str, tuple[str, float, str]]) -> Panel:
+    """Live per-vendor progress view."""
+    table = Table(box=box.SIMPLE_HEAD, expand=True, border_style="grey30")
+    table.add_column("Vendor", style="bold cyan", no_wrap=True)
+    table.add_column("Stage", style="white")
+    table.add_column("Progress", justify="left", no_wrap=True)
+
+    for vendor, (stage, prog, state) in statuses.items():
+        pct = int(max(0.0, min(1.0, prog or 0.0)) * 100)
+        width = 22
+        filled = max(0, min(width, int(pct / 100 * width)))
+
+        if state == "done":
+            bar_style, icon = "green3", "[green3]✓[/]"
+        elif state == "error":
+            bar_style, icon = "red", "[red]✗[/]"
         else:
-            current.append(word)
-            length += len(word) + 1
-    if current:
-        lines.append(" ".join(current))
-    return lines
+            bar_style, icon = "cyan", "[cyan]•[/]"
+
+        bar = Text.assemble(
+            ("█" * filled, bar_style),
+            ("░" * (width - filled), "grey30"),
+            (f" {pct:>3}%", "bold"),
+        )
+        table.add_row(f"{icon} {vendor}", stage or "…", bar)
+
+    return Panel(
+        table,
+        title="[bold]Assessment Progress[/]",
+        border_style="cyan",
+        padding=(1, 2),
+    )
+
+
+def _metrics_row(metrics: dict[str, Any]) -> Table:
+    grid = Table.grid(padding=(0, 3))
+    grid.add_row(
+        Text.assemble(("CVEs ", "dim"), (str(metrics.get("total_cves", 0)), "bold")),
+        Text.assemble(
+            ("Critical ", "dim"),
+            (str(metrics.get("critical_count", 0)), "bold red"),
+        ),
+        Text.assemble(
+            ("High ", "dim"),
+            (str(metrics.get("high_count", 0)), "bold dark_orange3"),
+        ),
+        Text.assemble(
+            ("Avg CVSS ", "dim"), (f"{metrics.get('avg_cvss', 0)}", "bold")
+        ),
+        Text.assemble(
+            ("Breaches ", "dim"), (str(metrics.get("breach_count", 0)), "bold")
+        ),
+    )
+    return grid
+
+
+def _report_panel(report: dict[str, Any]) -> Panel:
+    vendor = report.get("vendor_name") or report.get("vendor") or "Unknown"
+
+    if report.get("error"):
+        return Panel(
+            Text(str(report["error"]), style="red"),
+            title=f"[bold]{vendor}[/]",
+            border_style="red",
+            padding=(1, 2),
+        )
+
+    level = _risk_key(report)
+    score = _score_of(report)
+    style = _RISK_STYLE.get(level, "cyan")
+    emoji = _RISK_EMOJI.get(level, "⚪")
+
+    parts: list[Any] = []
+    parts.append(
+        Text.assemble(
+            ("Risk Level   ", "dim"),
+            (f"{emoji} {level.upper()}", style),
+        )
+    )
+    risk_score_line = Text.assemble(("Risk Score   ", "dim"))
+    risk_score_line.append_text(_score_bar(score, level))
+    parts.append(risk_score_line)
+
+    metrics = report.get("metrics") or {}
+    if metrics:
+        parts.append(Text(""))
+        parts.append(_metrics_row(metrics))
+
+    def _section(title: str, body: str) -> None:
+        parts.append(Text(""))
+        parts.append(Text(title, style="bold cyan"))
+        parts.append(Text(str(body), style="white"))
+
+    summary = report.get("executive_summary") or report.get("summary")
+    if summary:
+        _section("Executive Summary", summary)
+
+    if report.get("cve_analysis"):
+        _section("CVE & Vulnerability Analysis", report["cve_analysis"])
+
+    if report.get("osint_analysis"):
+        _section("OSINT & Threat Intelligence", report["osint_analysis"])
+
+    recs = report.get("recommendations") or []
+    if recs:
+        parts.append(Text(""))
+        parts.append(Text("Recommendations", style="bold cyan"))
+        for i, rec in enumerate(recs, 1):
+            text = (
+                rec
+                if isinstance(rec, str)
+                else (rec.get("text") or rec.get("recommendation") or str(rec))
+            )
+            parts.append(Text.assemble((f"  {i}. ", "cyan"), (text, "white")))
+
+    if report.get("synthesis_method") == "template":
+        parts.append(Text(""))
+        parts.append(
+            Text(
+                "· narrative generated from a template (local model synthesis "
+                "unavailable) · score is deterministic either way",
+                style="dim italic",
+            )
+        )
+
+    return Panel(
+        Group(*parts),
+        title=f"[bold]{vendor}[/]",
+        border_style=style,
+        padding=(1, 2),
+    )
+
+
+def _summary_table(vendors: list[str], results: dict[str, Any]) -> Table:
+    table = Table(
+        title="Vendor Comparison",
+        box=box.ROUNDED,
+        border_style="cyan",
+        title_style="bold cyan",
+        expand=True,
+    )
+    table.add_column("Vendor", style="bold")
+    table.add_column("Risk", justify="center")
+    table.add_column("Score", justify="right")
+    table.add_column("CVEs", justify="right")
+    table.add_column("Critical", justify="right")
+    table.add_column("Breaches", justify="right")
+
+    for vendor in vendors:
+        report = results.get(vendor) or {}
+        level = _risk_key(report)
+        score = _score_of(report)
+        style = _RISK_STYLE.get(level, "cyan")
+        emoji = _RISK_EMOJI.get(level, "⚪")
+        metrics = report.get("metrics") or {}
+        crit = metrics.get("critical_count", 0)
+
+        table.add_row(
+            vendor,
+            Text(f"{emoji} {level.upper()}", style=style),
+            Text(f"{score:.0f}", style=style),
+            str(metrics.get("total_cves", "—")),
+            Text(str(crit), style="red" if crit else "white"),
+            str(metrics.get("breach_count", "—")),
+        )
+    return table
 
 
 # ---------------------------------------------------------------------------
-# Progress dots
+# Health checks (doctor)
 # ---------------------------------------------------------------------------
 
 
-async def _show_progress(stop_event: asyncio.Event) -> None:
-    """Print dots while the assessment is running."""
-    sys.stdout.write("  Assessing vendors ")
-    sys.stdout.flush()
-    while not stop_event.is_set():
-        sys.stdout.write(".")
-        sys.stdout.flush()
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            continue
-    sys.stdout.write(" done!\n")
-    sys.stdout.flush()
+def _checks_panel(checks: list[Any]) -> Panel:
+    table = Table(box=box.SIMPLE_HEAD, expand=True, border_style="grey30")
+    table.add_column("", no_wrap=True)
+    table.add_column("Component", style="bold", no_wrap=True)
+    table.add_column("Detail", style="white")
+    for check in checks:
+        icon = "[green3]✓[/]" if check.ok else "[red]✗[/]"
+        table.add_row(icon, check.name, check.detail)
+    all_ok = all(c.ok for c in checks)
+    return Panel(
+        table,
+        title="[bold]System Check[/]",
+        subtitle="[green3]all systems go[/]" if all_ok else "[red]issues found[/]",
+        border_style="green3" if all_ok else "red",
+        padding=(1, 2),
+    )
+
+
+async def _run_doctor(*, use_color: bool) -> None:
+    """Render environment & service health for both CLI (Ollama) and web (Gemini)."""
+    console = Console(no_color=not use_color, highlight=False)
+    from agents.preflight import run_checks
+
+    console.print()
+    console.print(_header())
+    if console.is_terminal:
+        with console.status("[cyan]Running checks…[/]", spinner="dots"):
+            checks = await run_checks("all")
+    else:
+        checks = await run_checks("all")
+    console.print(_checks_panel(checks))
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -184,34 +350,54 @@ async def _show_progress(stop_event: asyncio.Event) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _run_assessment(vendors: list[str], *, use_color: bool) -> None:
-    """Import the orchestrator, run assessments, and display results."""
+async def _run_assessment(
+    vendors: list[str],
+    *,
+    use_color: bool,
+    as_json: bool,
+    output: str | None = None,
+) -> None:
+    """Import the orchestrator, run assessments, and render results."""
+    console = Console(no_color=not use_color, highlight=False)
 
-    print()
-    print(
-        _c("  +------------------------------------------------------+", "header", use_color=use_color)
-    )
-    print(
-        _c("  |       Automated Vendor Risk Assessor - CLI           |", "header", use_color=use_color)
-    )
-    print(
-        _c("  +------------------------------------------------------+", "header", use_color=use_color)
-    )
-    print()
-    print(f"  Vendors to assess: {', '.join(vendors)}")
-    print()
+    if not as_json:
+        console.print()
+        console.print(_header())
+        console.print(
+            Text.assemble(
+                ("  Vendors to assess:  ", "dim"),
+                (", ".join(vendors), "bold cyan"),
+            )
+        )
+        console.print()
 
-    # Lazy-import the orchestrator so CLI usage errors are surfaced before
-    # heavy imports.
+        # Pre-flight: warn early if the local Ollama model isn't available, so
+        # a silent deterministic fallback isn't mistaken for a real run.
+        from agents.preflight import check_ollama
+
+        ollama = await check_ollama()
+        if not ollama.ok:
+            console.print(
+                Panel(
+                    f"{ollama.detail}\n\n[dim]The assessment will continue but may "
+                    f"fall back to deterministic scoring only.[/]",
+                    title="[bold yellow]⚠ Ollama check[/]",
+                    border_style="yellow",
+                    padding=(1, 2),
+                )
+            )
+            console.print()
+
+    # Lazy-import so CLI usage errors surface before heavy imports.
     try:
         from agents.orchestrator import VendorRiskOrchestrator  # type: ignore[import-untyped]
     except ImportError:
-        print(
-            _c(
-                "  ERROR: agents.orchestrator not found.\n"
-                "  Ensure the agents package is installed.\n",
-                "error",
-                use_color=use_color,
+        console.print(
+            Panel(
+                "agents.orchestrator not found.\n"
+                "Ensure the agents package is installed.",
+                title="[bold red]Error[/]",
+                border_style="red",
             )
         )
         sys.exit(1)
@@ -221,6 +407,8 @@ async def _run_assessment(vendors: list[str], *, use_color: bool) -> None:
     mcp_transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
     mcp_port = int(os.getenv("MCP_SERVER_PORT", "8081"))
 
+    # CLI stays on the local Ollama model (AGENT_MODEL) — orchestrator resolves
+    # model=None via the model factory, which reads AGENT_MODEL.
     if mcp_transport == "sse":
         orchestrator = VendorRiskOrchestrator(
             mcp_server_url=f"http://localhost:{mcp_port}/sse",
@@ -232,67 +420,160 @@ async def _run_assessment(vendors: list[str], *, use_color: bool) -> None:
 
     await orchestrator.setup()
 
-    # Start progress indicator
-    stop = asyncio.Event()
-    progress_task = asyncio.create_task(_show_progress(stop))
+    # ── Live progress ───────────────────────────────────────────────────
+    statuses: dict[str, tuple[str, float, str]] = {
+        v: ("Queued…", 0.0, "run") for v in vendors
+    }
+
+    def _callback(vendor: str, status: str, progress: float | None) -> None:
+        prev = statuses.get(vendor, ("", 0.0, "run"))
+        prog = progress if progress is not None else prev[1]
+        state = prev[2]
+        if prog is not None and prog >= 1.0:
+            state = "done"
+        if status and "complete" in status.lower():
+            state = "done"
+        statuses[vendor] = (status or prev[0], prog, state)
+        if _live is not None:
+            _live.update(_status_table(statuses))
+
+    use_live = console.is_terminal and not as_json
+    _live: Live | None = None
 
     try:
-        results_list: list[dict[str, Any]] = await orchestrator.assess_vendors_batch(vendors)
+        if use_live:
+            with Live(
+                _status_table(statuses),
+                console=console,
+                refresh_per_second=8,
+            ) as live:
+                _live = live
+                results_list: list[dict[str, Any]] = (
+                    await orchestrator.assess_vendors_batch(
+                        vendors, progress_callback=_callback
+                    )
+                )
+                _live = None
+        else:
+            if not as_json:
+                console.print(
+                    "[dim]Assessing… (local models can take a while)[/]"
+                )
+            results_list = await orchestrator.assess_vendors_batch(
+                vendors, progress_callback=_callback
+            )
     finally:
-        stop.set()
-        await progress_task
+        if hasattr(orchestrator, "cleanup"):
+            await orchestrator.cleanup()
 
-    # Cleanup
-    if hasattr(orchestrator, "cleanup"):
-        await orchestrator.cleanup()
-
-    # Convert list of reports to a dict keyed by vendor name
+    # ── Normalise results into a vendor-keyed dict ──────────────────────
     results: dict[str, Any] = {}
     if isinstance(results_list, list):
         for i, report in enumerate(results_list):
             if isinstance(report, dict):
-                key = report.get("vendor_name", vendors[i] if i < len(vendors) else f"Vendor {i+1}")
+                key = report.get(
+                    "vendor_name", vendors[i] if i < len(vendors) else f"Vendor {i + 1}"
+                )
             else:
-                key = vendors[i] if i < len(vendors) else f"Vendor {i+1}"
+                key = vendors[i] if i < len(vendors) else f"Vendor {i + 1}"
             results[key] = report
     elif isinstance(results_list, dict):
         results = results_list
 
-    # Display results
-    print()
-    print(_c("  Assessment Results", "header", use_color=use_color))
-    _print_divider()
+    # ── Optional export to file (Markdown or JSON by extension) ─────────
+    if output:
+        report_list = results_list if isinstance(results_list, list) else list(results.values())
+        from app.exporters import reports_to_json, reports_to_markdown
 
+        if output.lower().endswith((".md", ".markdown")):
+            text = reports_to_markdown(report_list)
+        else:
+            text = reports_to_json(report_list)
+        try:
+            with open(output, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            if not as_json:
+                console.print(f"[green3]✓[/] Report written to [bold]{output}[/]")
+                console.print()
+        except OSError as exc:
+            console.print(f"[red]✗ Could not write {output}: {exc}[/]")
+
+    # ── JSON output mode ────────────────────────────────────────────────
+    if as_json:
+        print(json.dumps(results_list, indent=2, default=str))
+        return
+
+    # ── Rendered output ─────────────────────────────────────────────────
+    console.print()
     if not results:
-        print(_c("  No results returned.", "error", use_color=use_color))
+        console.print(
+            Panel("No results returned.", title="[bold red]Error[/]", border_style="red")
+        )
         return
 
     for vendor in vendors:
         report = results.get(vendor)
         if report is None:
-            print(f"\n  {_c(vendor, 'error', use_color=use_color)}: No report generated.\n")
+            console.print(
+                Panel(
+                    "No report generated.",
+                    title=f"[bold]{vendor}[/]",
+                    border_style="red",
+                )
+            )
             continue
         if isinstance(report, dict):
-            _print_report(vendor, report, use_color=use_color)
+            console.print(_report_panel(report))
         else:
-            print(f"\n  {vendor}: {report}\n")
+            console.print(Panel(str(report), title=f"[bold]{vendor}[/]"))
+        console.print()
 
-    # Summary table
-    _print_divider("═")
-    print(f"  {'VENDOR':<30} {'RISK LEVEL':<15} {'SCORE':<10}")
-    _print_divider("─")
-    for vendor in vendors:
-        report = results.get(vendor, {})
-        if isinstance(report, dict):
-            level = str(report.get("risk_level", report.get("overall_risk", "unknown"))).lower()
-            score = float(report.get("risk_score", report.get("overall_score", 0)))
-            emoji = _RISK_EMOJI.get(level, "⚪")
-            level_str = _c(f"{emoji} {level.upper()}", level, use_color=use_color)
-            print(f"  {vendor:<30} {level_str:<25} {score:.1f}/100")
-        else:
-            print(f"  {vendor:<30} {'N/A':<15} {'N/A':<10}")
-    _print_divider("═")
-    print()
+    console.print(_summary_table(vendors, results))
+    console.print()
+
+
+# ---------------------------------------------------------------------------
+# Plain fallback (only if rich is unavailable)
+# ---------------------------------------------------------------------------
+
+
+async def _run_assessment_plain(vendors: list[str], *, as_json: bool) -> None:
+    from agents.orchestrator import VendorRiskOrchestrator
+
+    import os
+
+    mcp_transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
+    mcp_port = int(os.getenv("MCP_SERVER_PORT", "8081"))
+    if mcp_transport == "sse":
+        orchestrator = VendorRiskOrchestrator(
+            mcp_server_url=f"http://localhost:{mcp_port}/sse"
+        )
+    else:
+        orchestrator = VendorRiskOrchestrator(
+            mcp_server_command=[sys.executable, "-m", "mcp_server.server"]
+        )
+    await orchestrator.setup()
+    print("Assessing vendors… (install 'rich' for the full UI)")
+    try:
+        results_list = await orchestrator.assess_vendors_batch(vendors)
+    finally:
+        if hasattr(orchestrator, "cleanup"):
+            await orchestrator.cleanup()
+
+    if as_json:
+        print(json.dumps(results_list, indent=2, default=str))
+        return
+
+    for report in results_list:
+        if not isinstance(report, dict):
+            continue
+        name = report.get("vendor_name", "Unknown")
+        level = str(report.get("risk_level", "UNKNOWN"))
+        score = _score_of(report)
+        print(f"\n=== {name} ===")
+        print(f"Risk: {level}  Score: {score:.0f}/100")
+        if report.get("executive_summary"):
+            print(report["executive_summary"])
 
 
 # ---------------------------------------------------------------------------
@@ -303,21 +584,34 @@ async def _run_assessment(vendors: list[str], *, use_color: bool) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vendor-risk-cli",
-        description="Automated Vendor Risk Assessor — CLI",
+        description="Automated Vendor Risk Assessor — CLI (local Ollama model)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     assess = sub.add_parser("assess", help="Assess one or more vendors")
-    assess.add_argument(
-        "vendors",
-        nargs="+",
-        help="Vendor name(s) to assess",
-    )
+    assess.add_argument("vendors", nargs="+", help="Vendor name(s) to assess")
     assess.add_argument(
         "--no-color",
         action="store_true",
         default=False,
         help="Disable coloured output",
+    )
+    assess.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit machine-readable JSON to stdout (implies no UI)",
+    )
+    assess.add_argument(
+        "--output",
+        metavar="PATH",
+        default=None,
+        help="Write the report to a file (.md → Markdown, otherwise JSON)",
+    )
+
+    sub.add_parser(
+        "doctor",
+        help="Check Ollama / Gemini / NVD / search configuration & connectivity",
     )
     return parser
 
@@ -327,16 +621,39 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    use_color = not args.no_color and sys.stdout.isatty()
+    use_color = sys.stdout.isatty()
 
-    if args.command == "assess":
+    if args.command == "doctor":
+        if not _RICH_AVAILABLE:
+            print("The 'doctor' command requires the 'rich' package.", file=sys.stderr)
+            sys.exit(1)
         try:
-            asyncio.run(_run_assessment(args.vendors, use_color=use_color))
+            asyncio.run(_run_doctor(use_color=use_color))
         except KeyboardInterrupt:
-            print(
-                _c("\n\n  Assessment cancelled by user.\n", "error", use_color=use_color)
-            )
             sys.exit(130)
+        return
+
+    if args.command != "assess":
+        parser.print_help()
+        return
+
+    use_color = use_color and not args.no_color
+
+    try:
+        if _RICH_AVAILABLE:
+            asyncio.run(
+                _run_assessment(
+                    args.vendors,
+                    use_color=use_color,
+                    as_json=args.json,
+                    output=args.output,
+                )
+            )
+        else:
+            asyncio.run(_run_assessment_plain(args.vendors, as_json=args.json))
+    except KeyboardInterrupt:
+        print("\n\n  Assessment cancelled by user.\n", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

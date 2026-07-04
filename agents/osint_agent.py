@@ -12,10 +12,11 @@ The agent stores its findings in the ADK session state under the key
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from google.adk.agents import LlmAgent
+
+from agents.model_factory import build_model
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +69,15 @@ JSON object** (no extra text, no markdown fences) with exactly this structure:
 """
 
 
-def create_osint_agent(mcp_tools: list[Any]) -> LlmAgent:
+def create_osint_agent(mcp_tools: list[Any], model: str | None = None) -> LlmAgent:
     """Create and return the OSINT LlmAgent.
 
     Args:
         mcp_tools: List of MCP tool instances to attach to the agent.
             Expected tools include ``search_web``, ``search_vendor_breaches``,
             ``search_vendor_compliance``, and ``search_vendor_news``.
+        model: Optional model id override. Falls back to ``AGENT_MODEL`` /
+            a local Ollama default via :func:`agents.model_factory.build_model`.
 
     Returns:
         A configured :class:`google.adk.agents.LlmAgent` ready to be used
@@ -85,12 +88,12 @@ def create_osint_agent(mcp_tools: list[Any]) -> LlmAgent:
         len(mcp_tools) if mcp_tools else 0,
     )
 
-    model = os.getenv("AGENT_MODEL", "gemini-2.0-flash-lite")
-    logger.info("OSINT agent using model: %s", model)
+    resolved = build_model(model)
+    logger.info("OSINT agent using model: %s", getattr(resolved, "model", resolved))
 
     agent = LlmAgent(
         name="osint_agent",
-        model=model,
+        model=resolved,
         instruction=_OSINT_INSTRUCTION,
         tools=mcp_tools or [],
         output_key="osint_findings",

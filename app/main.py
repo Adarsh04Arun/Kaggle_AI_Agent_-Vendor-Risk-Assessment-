@@ -18,7 +18,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -191,13 +191,19 @@ async def run_assessment_job(job_id: str, vendors: list[str]) -> None:
         mcp_transport = os.getenv("MCP_TRANSPORT", "stdio")
         mcp_port = int(os.getenv("MCP_SERVER_PORT", "8081"))
 
+        # The web interface uses Gemini (via GOOGLE_API_KEY) by default, while
+        # the CLI stays on local Ollama. Override with WEB_AGENT_MODEL.
+        web_model = os.getenv("WEB_AGENT_MODEL", "gemini-2.0-flash-lite")
+
         if mcp_transport == "sse":
             orchestrator = VendorRiskOrchestrator(
                 mcp_server_url=f"http://localhost:{mcp_port}/sse",
+                model=web_model,
             )
         else:
             orchestrator = VendorRiskOrchestrator(
                 mcp_server_command=["python", "-m", "mcp_server.server"],
+                model=web_model,
             )
         await orchestrator.setup()
 
@@ -393,6 +399,55 @@ async def stream_job_events(job_id: str) -> StreamingResponse:
 async def health_check() -> HealthResponse:
     """Lightweight health-check endpoint for load balancers & Docker."""
     return HealthResponse(status="healthy")
+
+
+@app.get("/api/status")
+async def status_check() -> dict[str, Any]:
+    """Detailed component status for the dashboard header chip.
+
+    Reports the web interface's configured LLM back-end (Gemini *or* local
+    Ollama, per WEB_AGENT_MODEL) plus NVD / search config.
+    """
+    from agents.preflight import check_nvd, check_search, check_web
+
+    checks = [await check_web(), check_nvd(), check_search()]
+    return {
+        "healthy": all(c.ok for c in checks),
+        "components": [
+            {"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks
+        ],
+    }
+
+
+@app.get("/api/assess/{job_id}/export")
+async def export_job(job_id: str, format: str = "json") -> Response:
+    """Download a completed assessment as JSON or Markdown."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    results = job.get("results") or []
+    if not results:
+        raise HTTPException(
+            status_code=409, detail="Job has no results yet — try again once complete."
+        )
+
+    from app.exporters import reports_to_json, reports_to_markdown
+
+    if format.lower() in ("md", "markdown"):
+        content = reports_to_markdown(results)
+        media_type = "text/markdown"
+        filename = "vendor-risk-report.md"
+    else:
+        content = reports_to_json(results)
+        media_type = "application/json"
+        filename = "vendor-risk-report.json"
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------------

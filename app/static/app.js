@@ -21,6 +21,9 @@ class VendorRiskApp {
     /** @type {EventSource|null} */
     this.eventSource = null;
 
+    /** @type {string|null} */
+    this.jobId = null;
+
     // Cache DOM references
     this.els = {
       input:         document.getElementById('vendor-input'),
@@ -36,10 +39,20 @@ class VendorRiskApp {
       statVendors:   document.getElementById('stat-vendors'),
       statAvgRisk:   document.getElementById('stat-avg-risk'),
       statHighest:   document.getElementById('stat-highest-risk'),
+      themeToggle:   document.getElementById('theme-toggle'),
+      statusChip:    document.getElementById('status-chip'),
+      statusDot:     document.getElementById('status-chip-dot'),
+      statusText:    document.getElementById('status-chip-text'),
+      emptyState:    document.getElementById('empty-state'),
+      btnExportJson: document.getElementById('btn-export-json'),
+      btnExportMd:   document.getElementById('btn-export-md'),
     };
 
     this._bindEvents();
     this._initPresets();
+    this._initTheme();
+    this._initStatus();
+    this._initExport();
   }
 
   /* ── Event Binding ───────────────────────────────────────── */
@@ -69,6 +82,73 @@ class VendorRiskApp {
         }
       });
     });
+  }
+
+  /* ── Theme ───────────────────────────────────────────────── */
+
+  _initTheme() {
+    const saved = localStorage.getItem('vra-theme') || 'dark';
+    this._applyTheme(saved);
+    if (this.els.themeToggle) {
+      this.els.themeToggle.addEventListener('click', () => {
+        const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        this._applyTheme(next);
+        localStorage.setItem('vra-theme', next);
+      });
+    }
+  }
+
+  _applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    if (this.els.themeToggle) {
+      this.els.themeToggle.textContent = theme === 'light' ? '☀️' : '🌙';
+    }
+  }
+
+  /* ── Status chip ─────────────────────────────────────────── */
+
+  async _initStatus() {
+    if (!this.els.statusDot) return;
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      const components = data.components || [];
+      const failed = components.filter((c) => !c.ok);
+      const ok = data.healthy;
+
+      this.els.statusDot.className = 'status-chip__dot ' + (ok ? 'status-chip__dot--ok' : 'status-chip__dot--warn');
+      this.els.statusText.textContent = ok
+        ? 'All systems go'
+        : `${failed.length} issue${failed.length === 1 ? '' : 's'}`;
+
+      if (this.els.statusChip) {
+        this.els.statusChip.title = components
+          .map((c) => `${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}`)
+          .join('\n');
+      }
+    } catch (err) {
+      this.els.statusDot.className = 'status-chip__dot status-chip__dot--error';
+      this.els.statusText.textContent = 'Offline';
+    }
+  }
+
+  /* ── Export ──────────────────────────────────────────────── */
+
+  _initExport() {
+    if (this.els.btnExportJson) {
+      this.els.btnExportJson.addEventListener('click', () => this._exportReport('json'));
+    }
+    if (this.els.btnExportMd) {
+      this.els.btnExportMd.addEventListener('click', () => this._exportReport('md'));
+    }
+  }
+
+  _exportReport(format) {
+    if (!this.jobId) {
+      this.showNotification('Run an assessment first.', 'warning');
+      return;
+    }
+    window.location.href = `/api/assess/${encodeURIComponent(this.jobId)}/export?format=${format}`;
   }
 
   /* ── Vendor Management ───────────────────────────────────── */
@@ -193,6 +273,7 @@ class VendorRiskApp {
 
       if (data.job_id) {
         // Server supports SSE streaming
+        this.jobId = data.job_id;
         this.connectSSE(data.job_id);
       } else if (data.reports || data.results) {
         // Synchronous response
@@ -427,6 +508,17 @@ class VendorRiskApp {
       sections.push({ title: 'Executive Summary', content: `<p class="collapsible__text">${this._escapeHtml(summary)}</p>` });
     }
 
+    // Backend emits `cve_analysis` / `osint_analysis` as narrative strings.
+    const cveAnalysis = report.cve_analysis || '';
+    if (cveAnalysis) {
+      sections.push({ title: 'CVE Analysis', content: `<p class="collapsible__text">${this._escapeHtml(cveAnalysis)}</p>` });
+    }
+
+    const osintAnalysis = report.osint_analysis || '';
+    if (osintAnalysis) {
+      sections.push({ title: 'OSINT Analysis', content: `<p class="collapsible__text">${this._escapeHtml(osintAnalysis)}</p>` });
+    }
+
     if (cves.length > 0) {
       const cvesHtml = cves.slice(0, 10).map((c) => {
         const cveId   = c.cve_id || c.id || 'N/A';
@@ -459,6 +551,12 @@ class VendorRiskApp {
       }).join('')}</ul>`;
       sections.push({ title: 'Recommendations', content: recsHtml });
     }
+
+    // Raw JSON — invaluable for debugging local-model output.
+    sections.push({
+      title: 'Raw JSON',
+      content: `<div class="raw-json"><pre class="raw-json__pre">${this._escapeHtml(JSON.stringify(report, null, 2))}</pre></div>`,
+    });
 
     sections.forEach((sec) => {
       sectionsContainer.appendChild(this._createCollapsible(sec.title, sec.content));
@@ -500,14 +598,25 @@ class VendorRiskApp {
     container.innerHTML = '<div class="breakdown__title">Score Breakdown</div>';
 
     Object.entries(breakdown).forEach(([label, value], idx) => {
-      const numVal = typeof value === 'number' ? value : parseFloat(value) || 0;
+      // Backend `score_breakdown` values are objects
+      // ({ score, weight, weighted_score, description }); older shapes may be
+      // plain numbers. Read the 0–100 factor score for the bar width.
+      let numVal;
+      let subLabel = '';
+      if (value && typeof value === 'object') {
+        numVal = Number(value.score ?? value.weighted_score ?? 0) || 0;
+        if (value.description) subLabel = String(value.description);
+      } else {
+        numVal = (typeof value === 'number' ? value : parseFloat(value)) || 0;
+      }
+      const prettyLabel = subLabel || this._prettifyKey(label);
       const colorClass = colorClasses[idx % colorClasses.length];
 
       const item = document.createElement('div');
       item.className = 'breakdown__item';
       item.innerHTML = `
         <div class="breakdown__item-header">
-          <span class="breakdown__item-label">${this._escapeHtml(label)}</span>
+          <span class="breakdown__item-label">${this._escapeHtml(prettyLabel)}</span>
           <span class="breakdown__item-value">${Math.round(numVal)}</span>
         </div>
         <div class="breakdown__bar">
@@ -538,13 +647,22 @@ class VendorRiskApp {
       const vendorName = report.vendor_name || report.vendor || 'Unknown';
       const score      = report.risk_score ?? report.overall_score ?? 0;
       const riskLevel  = report.risk_level || this._riskLevel(score);
+      const recommendations = report.recommendations || [];
+
+      // Prefer the backend's machine-readable metrics block; fall back to any
+      // structured arrays if present (older shapes).
+      const metrics    = report.metrics || {};
       const cves       = report.cve_findings || report.cves || [];
       const osint      = report.osint_findings || report.osint || [];
-      const recommendations = report.recommendations || [];
-      const criticalCves = cves.filter((c) => {
+      const cveCount     = metrics.total_cves ?? cves.length;
+      const criticalCves = metrics.critical_count ?? cves.filter((c) => {
         const sev = (c.severity || c.base_severity || '').toUpperCase();
         return sev === 'CRITICAL';
       }).length;
+      const osintSignals = (metrics.breach_count != null || metrics.compliance_issues != null || metrics.security_incidents != null)
+        ? (metrics.breach_count || 0) + (metrics.compliance_issues || 0) + (metrics.security_incidents || 0)
+        : osint.length;
+
       const topRec = recommendations.length > 0
         ? (typeof recommendations[0] === 'string' ? recommendations[0] : recommendations[0].text || recommendations[0].recommendation || '—')
         : '—';
@@ -554,9 +672,9 @@ class VendorRiskApp {
         <td style="font-weight:600;color:var(--text-primary)">${this._escapeHtml(vendorName)}</td>
         <td style="font-weight:600;color:${this._riskColor(score)}">${score}</td>
         <td><span class="vendor-card__badge ${this._riskBadgeClass(riskLevel)}">${this._escapeHtml(riskLevel)}</span></td>
-        <td>${cves.length}</td>
+        <td>${cveCount}</td>
         <td style="color:${criticalCves > 0 ? 'var(--risk-critical)' : 'var(--text-secondary)'}">${criticalCves}</td>
-        <td>${osint.length}</td>
+        <td>${osintSignals}</td>
         <td style="font-size:0.8rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${this._escapeHtml(topRec.substring(0, 60))}${topRec.length > 60 ? '…' : ''}</td>
       `;
       this.els.comparisonBody.appendChild(row);
@@ -641,6 +759,7 @@ class VendorRiskApp {
 
   _showProgressSection() {
     this.els.agentFeed.innerHTML = '';
+    if (this.els.emptyState) this.els.emptyState.classList.add('is-hidden');
     this.showSection('progress-section');
     this.hideSection('results-section');
   }
@@ -758,6 +877,18 @@ class VendorRiskApp {
     if (s === 'HIGH')     return '#f97316';
     if (s === 'MEDIUM')   return '#eab308';
     return '#22c55e';
+  }
+
+  /**
+   * Turn a snake_case breakdown key into a Title Case label.
+   * e.g. "cve_critical" → "Cve Critical"; "avg_cvss" → "Avg Cvss".
+   * @param {string} key
+   * @returns {string}
+   */
+  _prettifyKey(key) {
+    return String(key || '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   _agentColorClass(agent) {

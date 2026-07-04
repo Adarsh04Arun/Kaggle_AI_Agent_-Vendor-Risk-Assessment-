@@ -19,6 +19,12 @@ venv/
 
 # Local diagnostic / scratch files
 diagnose.py
+claude.txt
+CLI
+Web
+
+# Windows-only launcher (not used in the Linux container)
+*.bat
 
 # Docs not needed at runtime
 README.md
